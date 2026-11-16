@@ -189,11 +189,7 @@ export class InteractionManager {
 
     removePickup(interactable) {
         this.systems.propLibrary?.removeHighlight(interactable.mesh);
-        const material = interactable.mesh.material;
-        const propMaterials = interactable.mesh.metadata?.propOwnedMaterials || [];
         interactable.mesh.dispose();
-        propMaterials.forEach((ownedMaterial) => ownedMaterial.dispose());
-        material?.dispose();
         this.interactables.delete(interactable.mesh.id);
     }
 
@@ -244,11 +240,6 @@ export class InteractionManager {
     }
 
     checkForInteractables() {
-        if (this.systems.playerController.controlsLocked || this.systems.playerController.frozen) {
-            this.currentInteractable = null;
-            this.updateInteractionUI(null);
-            return;
-        }
         const camera = this.scene.activeCamera;
         if (!camera) return;
 
@@ -344,7 +335,8 @@ export class InteractionManager {
         switch (interactable.type) {
             case 'door': {
                 const d = interactable.data;
-                if (!d.locked) return 'Press E to open';
+                if (d.requiresPower && !this.systems.eventSystem.gameState.powerRestored) return 'No power';
+                if (!d.locked) return d.ending ? 'Press E to escape' : 'Press E to open';
                 if (this.hasItem('key', d.keyId)) return 'Press E to unlock';
                 return d.requiresName ? `Locked - needs ${d.requiresName}` : 'Locked';
             }
@@ -356,8 +348,15 @@ export class InteractionManager {
                 return 'Press E to pick up battery';
             case 'switch':
                 return 'Press E to flip switch';
-            case 'generator':
+            case 'machine':
+                return 'Press E to use the apparatus';
+            case 'generator': {
+                const g = interactable.data;
+                if (g.requiresItem && !this.hasItem(g.requiresItem.type, g.requiresItem.id)) {
+                    return g.requiresName ? `Generator - needs ${g.requiresName}` : 'Generator is dead';
+                }
                 return 'Press E to start generator';
+            }
             default:
                 return 'Press E to interact';
         }
@@ -368,7 +367,7 @@ export class InteractionManager {
     // ---------------------------------------------------------------
 
     tryInteract() {
-        if (this.systems.playerController?.controlsLocked || this.systems.playerController?.frozen || !this.currentInteractable || !this.currentInteractable.isActive) return false;
+        if (!this.currentInteractable) return false;
 
         const interactable = this.currentInteractable;
 
@@ -385,6 +384,8 @@ export class InteractionManager {
                 return this.interactWithSwitch(interactable);
             case 'generator':
                 return this.interactWithGenerator(interactable);
+            case 'machine':
+                return this.interactWithMachine(interactable);
             default:
                 return false;
         }
@@ -392,6 +393,13 @@ export class InteractionManager {
 
     interactWithDoor(interactable) {
         const data = interactable.data;
+
+        // Gerbang bertenaga listrik: tidak bisa dibuka sebelum generator menyala
+        if (data.requiresPower && !this.systems.eventSystem.gameState.powerRestored) {
+            this.systems.audioManager.playSound('door_locked');
+            this.showMessage('The gate is dead - the building has no power');
+            return false;
+        }
 
         if (data.locked) {
             if (this.hasItem('key', data.keyId)) {
@@ -408,10 +416,78 @@ export class InteractionManager {
             }
         }
 
+        // Pintu keluar: mengakhiri game
+        if (data.ending) {
+            this.systems.audioManager.playSound('door_creak');
+            this.systems.eventSystem.emit('game_escaped', data);
+            return true;
+        }
+
+        // Pintu ke wing lain: pindahkan pemain dengan layar menggelap
+        if (data.portal) {
+            return this.usePortal(interactable);
+        }
+
         this.systems.audioManager.playSound('door_creak');
         this.systems.eventSystem.emit('door_opened', data);
         this.openDoor(interactable);
         return true;
+    }
+
+    // Memindahkan pemain lewat pintu portal (hull <-> wing).
+    usePortal(interactable) {
+        if (this.transitioning) return false;
+
+        // Saat monster aktif, pintu wing tidak boleh dipakai untuk kabur.
+        // Pengecualian: pintu Experiment Chamber (portal.allowDuringChase) adalah tempat berlindung.
+        const monster = this.systems.monsterManager;
+        const chaseStates = interactable.data.portal.allowDuringChase
+            ? ['caught']
+            : ['pending', 'spawning', 'chasing', 'caught'];
+        if (monster && chaseStates.includes(monster.state)) {
+            this.systems.audioManager.playSound('door_locked');
+            this.showMessage("It's right behind you - there's no time for doors!");
+            return false;
+        }
+
+        const portal = interactable.data.portal;
+        const camera = this.scene.activeCamera;
+        this.transitioning = true;
+        this.systems.audioManager.playSound('door_creak');
+
+        this.fadeThrough(() => {
+            camera.position.set(portal.x, 4.0, portal.z);
+            camera.rotation.x = 0;
+            camera.rotation.y = portal.yaw ?? 0;
+            if (this.systems.sceneManager) {
+                this.systems.sceneManager.areaLabel = portal.areaLabel ?? null;
+            }
+            if (portal.message) this.showMessage(portal.message, 3500);
+            this.systems.eventSystem.emit('portal_used', interactable.data);
+        });
+        return true;
+    }
+
+    // Layar menggelap, lalu aksi dijalankan di tengah gelap, lalu terang lagi.
+    fadeThrough(action) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText =
+            'position:fixed;inset:0;background:#000;opacity:0;z-index:900;pointer-events:none;transition:opacity 0.35s ease;';
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => {
+            overlay.style.opacity = '1';
+        });
+        setTimeout(() => {
+            try {
+                action();
+            } finally {
+                overlay.style.opacity = '0';
+                setTimeout(() => {
+                    overlay.remove();
+                    this.transitioning = false;
+                }, 450);
+            }
+        }, 400);
     }
 
     // Pintu bergeser naik ke atas, lalu hilang. Tabrakan dimatikan seketika
@@ -422,16 +498,20 @@ export class InteractionManager {
         interactable.data.isOpen = true;
         mesh.checkCollisions = false;
 
+        // Pintu putih HD: daun pintu berayun terbuka, anchor hanya dimatikan sebagai sasaran/tabrakan.
+        const hd = mesh.metadata && mesh.metadata.hdDoor;
+        if (hd) {
+            mesh.isPickable = false;
+            hd.open();
+            return;
+        }
+
         const startY = mesh.position.y;
         const height = (interactable.data.size && interactable.data.size.h) || 3;
         const endY = startY + height + 0.2;
         let t = 0;
 
         const observer = this.scene.onBeforeRenderObservable.add(() => {
-            if (mesh.isDisposed()) {
-                this.scene.onBeforeRenderObservable.remove(observer);
-                return;
-            }
             t += this.scene.getEngine().getDeltaTime() / 1000 / 1.2;
             const k = Math.min(1, t);
             const eased = 1 - Math.pow(1 - k, 3);
@@ -493,10 +573,37 @@ export class InteractionManager {
         return true;
     }
 
+    // Konsol mesin lab: pemain memilih ending di depan apparatus (Scene 6 storyboard).
+    interactWithMachine(interactable) {
+        const lab = this.systems.sceneManager?.wingBuilder?.lab;
+        // Selama kunci masih di pedestal, lingkaran ritual masih menahan mesin.
+        if (lab && !lab.keyTaken) {
+            this.systems.audioManager.playSound('door_locked');
+            this.showMessage('The circle still holds. The machine will not answer.');
+            return false;
+        }
+        this.systems.audioManager.playSound('switch_flip');
+        this.systems.eventSystem.emit('ending_choice_requested', { id: interactable.data.id });
+        return true;
+    }
+
     interactWithGenerator(interactable) {
+        const req = interactable.data.requiresItem;
+        if (req && !this.hasItem(req.type, req.id)) {
+            this.systems.audioManager.playSound('door_locked');
+            this.showMessage(
+                interactable.data.requiresName
+                    ? `The generator is dead - it needs the ${interactable.data.requiresName}`
+                    : 'The generator will not start'
+            );
+            return false;
+        }
         if (!interactable.data.isRunning) {
             interactable.data.isRunning = true;
+            interactable.isActive = false;
+            this.showMessage('The generator coughs, then roars to life...', 3500);
             this.systems.audioManager.playSound('generator_start');
+            if (interactable.mesh.metadata && interactable.mesh.metadata.hdGenerator) interactable.mesh.metadata.hdGenerator.start();
             this.systems.eventSystem.emit('generator_started', interactable.data);
 
             // Start generator sound loop
@@ -514,11 +621,6 @@ export class InteractionManager {
         const id = data.id ?? `${type}_${this.inventory.size}`;
         this.inventory.set(`${type}:${id}`, { type, data });
 
-        // Update UI
-        const itemsElement = document.getElementById('items');
-        if (itemsElement) {
-            itemsElement.textContent = this.inventory.size.toString();
-        }
     }
 
     hasItem(type, id) {

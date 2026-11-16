@@ -1,96 +1,146 @@
-import { HemisphericLight, DirectionalLight, SpotLight, Color3, Vector3,
-         ParticleSystem, Texture, Animation, Color4, PointLight, Scene } from '@babylonjs/core';
+import { HemisphericLight, DirectionalLight, SpotLight, PointLight, Light, Color3, Vector3,
+         ParticleSystem, Texture, Animation, MeshBuilder } from '@babylonjs/core';
+import { areaAt, AREA_LIGHT_GROUP } from './AreaMap.js';
 
-import { STORY_AREA_LAYOUT } from './StoryAreas.js';
+/**
+ * KESEIMBANGAN PENCAHAYAAN
+ * Hall (corridor_baru.glb, material PBR), wing (material standar) dan Experiment Chamber
+ * dihitung berbeda oleh mesin render, jadi masing-masing punya pengaturan sendiri.
+ *   ambient    : cahaya dasar area (0 = gelap total)
+ *   lampScale  : pengali semua lampu langit-langit di area itu
+ * Ubah angka di sini kalau satu area terasa terlalu terang / gelap. Saat bermain
+ * juga bisa disetel langsung: 1/2 = hall redup/terang, 3/4 = wing, 5/6 = lab.
+ */
+// Suasana in-game dibuat lebih gelap: ambient turun ~35% dan lampu diredupkan.
+export const LIGHT_BALANCE = {
+    hall: { ambient: 0.12, lampScale: 0.75 },
+    wing: { ambient: 0.09, lampScale: 0.65 },
+    lab:  { ambient: 0.08, lampScale: 0.65 },
+};
+
+// Lampu langit-langit hall: [x, z, intensitas, jangkauan, warna]. Tinggi lampu: 6.0 (plafon 6.66).
+// Semua berada DI DALAM ruang yang bisa dilalui (diambil dari denah lantai model).
+const HALL_LAMPS = [
+    ['west',     -1.6, -5.2, 0.70, 10, [1.0, 0.93, 0.78]],
+    ['junction',  4.2, -5.2, 0.80, 12, [1.0, 0.93, 0.78]],
+    ['east',     10.8, -4.5, 0.75, 11, [1.0, 0.90, 0.75]],
+    ['north',     4.2,  3.5, 0.80, 13, [1.0, 0.93, 0.78]],
+];
+const HALL_LAMP_Y = 6.0;
 
 export class EnvironmentManager {
     constructor(scene, systems) {
         this.scene = scene;
         this.systems = systems;
         this.lights = [];
+        this.areaLamps = { hall: [], infirmary: [], cellblock: [], boiler: [], lab: [] };
+        this.ambient = null;
+        this.currentArea = 'hall';
+        this.userScale = { hall: 1, wing: 1, lab: 1 };
+        this.powerBoost = 1;
+        this.powerBoostTarget = 1;
         this.particleSystems = [];
         this.flickerInterval = null;
         this.powerRestored = false;
-        this.lightIntervals = new Set();
-        this.lightTimeouts = new Set();
-        
+        this.ambientTarget = LIGHT_BALANCE.hall.ambient;
+
         this.setupBasicLighting();
         this.createAtmosphericEffects();
-    }
-    
-    lightTimeout(callback, delay) {
-        const handle = setTimeout(() => {
-            this.lightTimeouts.delete(handle);
-            callback();
-        }, delay);
-        this.lightTimeouts.add(handle);
-        return handle;
+        this.setupTuningKeys();
     }
 
-    lightInterval(callback, delay) {
-        const handle = setInterval(callback, delay);
-        this.lightIntervals.add(handle);
-        return handle;
+    // ---------------------------------------------------------------
+    // LAMPU PER AREA
+    // ---------------------------------------------------------------
+
+    group(area) {
+        return AREA_LIGHT_GROUP[area] || 'hall';
     }
 
-    stopLightTimers() {
-        this.lightIntervals.forEach((handle) => clearInterval(handle));
-        this.lightTimeouts.forEach((handle) => clearTimeout(handle));
-        this.lightIntervals.clear();
-        this.lightTimeouts.clear();
-        this.flickerInterval = null;
+    // Intensitas akhir sebuah lampu = dasar x pengali area x pengaturan pemain.
+    effective(light) {
+        const meta = light.metadata || {};
+        const group = this.group(meta.area);
+        const boost = meta.area === 'hall' ? this.powerBoost : 1;
+        return (meta.base ?? 0.5) * LIGHT_BALANCE[group].lampScale * this.userScale[group] * boost;
+    }
+
+    /**
+     * Membuat lampu titik untuk sebuah area. Hanya lampu area tempat pemain berada yang
+     * dinyalakan, jadi batas jumlah lampu per material tidak pernah habis oleh area lain.
+     */
+    createAreaLamp(area, name, position, base, range, color) {
+        const light = new PointLight(name, position, this.scene);
+        light.falloffType = Light.FALLOFF_STANDARD; // peluruhan linear, sama untuk PBR dan material standar
+        light.range = range;
+        light.diffuse = color || new Color3(1, 0.9, 0.7);
+        light.specular = new Color3(0.1, 0.1, 0.1);
+        light.metadata = { base, area };
+        light.intensity = 0;
+        this.areaLamps[area].push(light);
+        this.lights.push(light);
+        light.setEnabled(area === this.currentArea);
+        light.intensity = this.effective(light);
+        return light;
+    }
+
+    allLamps() {
+        return Object.values(this.areaLamps).flat().filter((l) => l && !l.isDisposed());
+    }
+
+    activeLamps() {
+        return this.areaLamps[this.currentArea].filter((l) => l && !l.isDisposed());
+    }
+
+    refreshIntensities() {
+        this.allLamps().forEach((l) => {
+            l.setEnabled(l.metadata.area === this.currentArea);
+            l.intensity = this.effective(l);
+        });
+    }
+
+    setActiveArea(area) {
+        if (area === this.currentArea) return;
+        this.currentArea = area;
+        this.ambientTarget = LIGHT_BALANCE[this.group(area)].ambient * this.userScale[this.group(area)];
+        this.refreshIntensities();
     }
 
     setupBasicLighting() {
-        // Very dim ambient light for horror atmosphere
+        // Dipanggil saat awal dan setiap memuat scene. Lampu lama sudah dibuang SceneManager.
+        this.lights = [];
+        Object.keys(this.areaLamps).forEach((k) => (this.areaLamps[k] = []));
+
         const ambient = new HemisphericLight('ambient', new Vector3(0, 1, 0), this.scene);
-        ambient.intensity = 0.05;
-        ambient.diffuse = new Color3(0.3, 0.3, 0.4);
+        ambient.diffuse = new Color3(0.58, 0.6, 0.74);
+        ambient.groundColor = new Color3(0.2, 0.17, 0.17);
+        ambient.specular = Color3.Black();
+        ambient.intensity = LIGHT_BALANCE.hall.ambient;
+        this.ambient = ambient;
         this.lights.push(ambient);
-        
-        // Add atmospheric corridor lighting
-        this.setupAtmosphericLighting();
-    }
-    
-    setupAtmosphericLighting() {
-        // Corridor emergency lights
-        const corridorPositions = [
-            new Vector3(0, 3.5, 5),
-            new Vector3(0, 3.5, 15),
-            new Vector3(0, 3.5, 25),
-            new Vector3(0, 3.5, 35)
-        ];
-        
-        corridorPositions.forEach((pos, index) => {
-            const light = new SpotLight(`corridor_${index}`, 
-                pos, 
-                new Vector3(0, -1, 0), 
-                Math.PI / 6, 2, this.scene);
-            light.intensity = 0.15;
-            light.diffuse = new Color3(0.8, 0.7, 0.5);
-            light.range = 12;
-            this.lights.push(light);
-            
-            // Add subtle flickering
-            if (Math.random() > 0.5) {
-                this.addSubtleFlicker(light);
-            }
+        this.currentArea = 'hall';
+        this.ambientTarget = LIGHT_BALANCE.hall.ambient;
+
+        HALL_LAMPS.forEach(([name, x, z, base, range, color]) => {
+            this.createAreaLamp('hall', `hall_${name}`, new Vector3(x, HALL_LAMP_Y, z), base, range, new Color3(...color));
         });
     }
-    
-    addSubtleFlicker(light) {
-        const originalIntensity = light.intensity;
-        this.lightInterval(() => {
-            if (Math.random() < 0.1) {
-                light.intensity = originalIntensity * (0.5 + Math.random() * 0.5);
-                this.lightTimeout(() => {
-                    light.intensity = originalIntensity;
-                }, 100 + Math.random() * 200);
-            }
-        }, 2000 + Math.random() * 3000);
+
+    setupTuningKeys() {
+        // 1/2 hall, 3/4 wing, 5/6 lab: kurangi / tambah 15% (hasil dicetak di konsol)
+        const map = { '1': ['hall', 1 / 1.15], '2': ['hall', 1.15], '3': ['wing', 1 / 1.15], '4': ['wing', 1.15], '5': ['lab', 1 / 1.15], '6': ['lab', 1.15] };
+        window.addEventListener('keydown', (e) => {
+            const m = map[e.key];
+            if (!m) return;
+            const [group, k] = m;
+            this.userScale[group] = Math.min(4, Math.max(0.25, this.userScale[group] * k));
+            this.ambientTarget = LIGHT_BALANCE[this.group(this.currentArea)].ambient * this.userScale[this.group(this.currentArea)];
+            this.refreshIntensities();
+            console.log(`[Light] ${group} x${this.userScale[group].toFixed(2)} (ubah LIGHT_BALANCE di EnvironmentManager.js agar permanen)`);
+        });
     }
-    
-    setupDimLighting() {
+
+        setupDimLighting() {
         this.clearLights();
         
         // Minimal ambient
@@ -171,7 +221,7 @@ export class EnvironmentManager {
             clearInterval(this.flickerInterval);
         }
         
-        this.flickerInterval = this.lightInterval(() => {
+        this.flickerInterval = setInterval(() => {
             this.lights.forEach(light => {
                 if (light.name.includes('flicker')) {
                     // Random flicker
@@ -179,7 +229,7 @@ export class EnvironmentManager {
                         const originalIntensity = light.intensity;
                         light.intensity = Math.random() * 0.1;
                         
-                        this.lightTimeout(() => {
+                        setTimeout(() => {
                             light.intensity = originalIntensity;
                         }, 50 + Math.random() * 200);
                     }
@@ -189,20 +239,12 @@ export class EnvironmentManager {
     }
     
     flickerLights() {
-        // Immediate flicker effect for entity encounters
-        this.lights.forEach(light => {
-            if (light.name !== 'ambient') {
-                const originalIntensity = light.intensity;
-                light.intensity = 0;
-                
-                this.lightTimeout(() => {
-                    light.intensity = originalIntensity * 0.3;
-                    this.lightTimeout(() => {
-                        light.intensity = originalIntensity;
-                    }, 100);
-                }, 50);
-            }
-        });
+        // Aman dipanggil berulang (dua listener memanggilnya sekaligus): semua lampu
+        // selalu dikembalikan ke intensitas efektif, bukan ke nilai sementara.
+        const lamps = this.activeLamps();
+        lamps.forEach((l) => (l.intensity = 0));
+        setTimeout(() => lamps.forEach((l) => !l.isDisposed() && (l.intensity = this.effective(l) * 0.3)), 50);
+        setTimeout(() => this.refreshIntensities(), 160);
     }
     
     createAtmosphericEffects() {
@@ -216,15 +258,15 @@ export class EnvironmentManager {
         // Dust texture (create simple white texture)
         dustSystem.particleTexture = new Texture('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==', this.scene);
         
-        // Babylon applies the emitter transform, so these bounds stay camera-local.
+        // Emitter
         dustSystem.emitter = this.scene.activeCamera;
         dustSystem.minEmitBox = new Vector3(-10, -2, -10);
         dustSystem.maxEmitBox = new Vector3(10, 4, 10);
         
         // Particle properties
-        dustSystem.color1 = new Color4(0.8, 0.8, 0.7, 0.25);
-        dustSystem.color2 = new Color4(0.6, 0.6, 0.5, 0.15);
-        dustSystem.colorDead = new Color4(0.4, 0.4, 0.3, 0);
+        dustSystem.color1 = new Color3(0.8, 0.8, 0.7);
+        dustSystem.color2 = new Color3(0.6, 0.6, 0.5);
+        dustSystem.colorDead = new Color3(0.4, 0.4, 0.3);
         
         dustSystem.minSize = 0.01;
         dustSystem.maxSize = 0.05;
@@ -242,14 +284,13 @@ export class EnvironmentManager {
         dustSystem.gravity = new Vector3(0, -0.1, 0);
         
         dustSystem.start();
-        this.dustSystem = dustSystem;
         this.particleSystems.push(dustSystem);
     }
     
     createFogEffect() {
         // Enhanced fog for horror atmosphere
         this.scene.fogEnabled = true;
-        this.scene.fogMode = Scene.FOGMODE_EXP2;
+        this.scene.fogMode = 3; // FOGMODE_EXP2
         this.scene.fogColor = new Color3(0.08, 0.08, 0.12);
         this.scene.fogDensity = 0.015;
         this.scene.fogStart = 5.0;
@@ -257,68 +298,10 @@ export class EnvironmentManager {
     }
     
     restorePower() {
-        if (this.powerRestored) return;
+        // Listrik menyala: lampu hall naik bertahap (tanpa lampu global yang menerangi semua area).
         this.powerRestored = true;
-        
-        // Gradually restore lighting
-        const restoreAnimation = () => {
-            let intensity = 0;
-            const maxIntensity = 0.6;
-            const step = 0.02;
-            
-            const interval = this.lightInterval(() => {
-                intensity += step;
-                
-                // Add new lights
-                if (intensity === step) {
-                    this.addPowerRestoredLights();
-                }
-                
-                // Update light intensities
-                this.lights.forEach(light => {
-                    if (light.name.includes('power_restored')) {
-                        light.intensity = Math.min(intensity, maxIntensity);
-                    }
-                });
-                
-                if (intensity >= maxIntensity) {
-                    clearInterval(interval);
-                    this.systems.eventSystem.emit('power_fully_restored');
-                }
-            }, 100);
-        };
-        
-        this.lightTimeout(restoreAnimation, 1000);
-    }
-    
-    addPowerRestoredLights() {
-        if (this.systems.sceneManager.currentScene === 'experiment_lab') {
-            const layout = STORY_AREA_LAYOUT.experiment_lab;
-            const zone = { position: layout.generator.clone(), radius: layout.powerRadius };
-            this.systems.sceneManager.safeZones.push(zone);
-            const light = new PointLight('power_restored_generator', zone.position.add(new Vector3(0, 3, 0)), this.scene);
-            light.diffuse = new Color3(0.55, 0.85, 1);
-            light.range = 11;
-            light.intensity = 0;
-            this.lights.push(light);
-            return;
-        }
-        // Main corridor lighting
-        const mainLight = new DirectionalLight('power_restored_main', new Vector3(0, -1, 0.3), this.scene);
-        mainLight.intensity = 0;
-        mainLight.diffuse = new Color3(0.9, 0.9, 1.0);
-        this.lights.push(mainLight);
-        
-        // Exit pathway lights
-        for (let i = 0; i < 5; i++) {
-            const pathLight = new SpotLight(`power_restored_path_${i}`, 
-                new Vector3(0, 2.5, 8 + i * 2), 
-                new Vector3(0, -1, 0), 
-                Math.PI / 8, 1, this.scene);
-            pathLight.intensity = 0;
-            pathLight.diffuse = new Color3(0.8, 1.0, 0.8);
-            this.lights.push(pathLight);
-        }
+        this.powerBoostTarget = 1.35;
+        this.powerRestoreDone = false;
     }
     
     startChaseSequence() {
@@ -327,7 +310,7 @@ export class EnvironmentManager {
             if (!light.name.includes('flashlight')) {
                 // Strobe effect
                 let strobeCount = 0;
-                const strobeInterval = this.lightInterval(() => {
+                const strobeInterval = setInterval(() => {
                     light.intensity = light.intensity > 0 ? 0 : 0.8;
                     strobeCount++;
                     
@@ -381,31 +364,29 @@ export class EnvironmentManager {
         });
     }
     
-    setupStoryLighting(name, safeZones) {
-        this.clearLights();
-        this.powerRestored = false;
-        const ambient = new HemisphericLight('story_ambient', Vector3.Up(), this.scene);
-        ambient.intensity = 0.12;
-        ambient.diffuse = name === 'restricted_area' ? new Color3(0.6, 0.18, 0.15) : new Color3(0.25, 0.4, 0.7);
-        this.lights.push(ambient);
-        safeZones.forEach((zone, index) => {
-            const light = new PointLight(`safe_zone_${index}`, zone.position.add(new Vector3(0, 2.8, 0)), this.scene);
-            light.intensity = 1.1;
-            light.range = 7;
-            light.diffuse = new Color3(0.7, 0.85, 1);
-            this.lights.push(light);
-        });
-    }
-
-    // Compatibility entry points: the single MonsterManager owns all pursuit state.
     startEntityPursuit() {
-        this.systems.monsterManager?.startChase();
+        // Create entity presence effects
+        this.createEntityEffects();
+        
+        // Start pursuit audio
+        this.systems.audioManager.playAmbient('entity_pursuit');
+        
+        // Periodic entity encounters
+        this.entityPursuitInterval = setInterval(() => {
+            const playerPos = this.scene.activeCamera.position;
+            const entityPos = playerPos.add(new Vector3(
+                (Math.random() - 0.5) * 10,
+                0,
+                (Math.random() - 0.5) * 10
+            ));
+            
+            this.systems.eventSystem.emit('entity_encounter', {
+                position: entityPos,
+                intensity: 2
+            });
+        }, 3000 + Math.random() * 2000);
     }
-
-    stopEntityPursuit() {
-        this.systems.monsterManager?.despawn();
-    }
-
+    
     createEntityEffects() {
         // Shadow particles
         const shadowSystem = new ParticleSystem('shadows', 100, this.scene);
@@ -415,9 +396,9 @@ export class EnvironmentManager {
         shadowSystem.minEmitBox = new Vector3(-5, 0, -5);
         shadowSystem.maxEmitBox = new Vector3(5, 3, 5);
         
-        shadowSystem.color1 = new Color4(0.1, 0.1, 0.1, 0.3);
-        shadowSystem.color2 = new Color4(0.05, 0.05, 0.05, 0.15);
-        shadowSystem.colorDead = new Color4(0, 0, 0, 0);
+        shadowSystem.color1 = new Color3(0.1, 0.1, 0.1);
+        shadowSystem.color2 = new Color3(0.05, 0.05, 0.05);
+        shadowSystem.colorDead = new Color3(0, 0, 0);
         
         shadowSystem.minSize = 0.5;
         shadowSystem.maxSize = 2.0;
@@ -430,7 +411,6 @@ export class EnvironmentManager {
     }
     
     clearLights() {
-        this.stopLightTimers();
         this.lights.forEach(light => {
             if (light.name !== 'flashlight') {
                 light.dispose();
@@ -444,11 +424,35 @@ export class EnvironmentManager {
         }
     }
     
-    update() {
-        // The camera may be created after the environment, replaced, or removed.
-        if (this.dustSystem) {
-            this.dustSystem.emitter = this.scene.activeCamera;
+    update(deltaTime) {
+        const cam = this.scene.activeCamera;
+        if (cam) {
+            this.setActiveArea(areaAt(cam.position.x, cam.position.z));
+
+            // Cahaya dasar bergeser halus saat pindah area
+            if (this.ambient) {
+                const k = Math.min(1, deltaTime * 4);
+                this.ambient.intensity += (this.ambientTarget - this.ambient.intensity) * k;
+            }
         }
+
+        if (this.powerBoost !== this.powerBoostTarget) {
+            const step = deltaTime * 0.35;
+            this.powerBoost += Math.sign(this.powerBoostTarget - this.powerBoost) * Math.min(step, Math.abs(this.powerBoostTarget - this.powerBoost));
+            this.refreshIntensities();
+            if (this.powerBoost === this.powerBoostTarget && !this.powerRestoreDone) {
+                this.powerRestoreDone = true;
+                this.systems.eventSystem.emit('power_fully_restored');
+            }
+        }
+
+        // Debu mengikuti pemain
+        this.particleSystems.forEach(system => {
+            if (system.emitter === this.scene.activeCamera) {
+                system.minEmitBox = this.scene.activeCamera.position.add(new Vector3(-5, -1, -5));
+                system.maxEmitBox = this.scene.activeCamera.position.add(new Vector3(5, 2, 5));
+            }
+        });
     }
     
     dispose() {
@@ -458,6 +462,9 @@ export class EnvironmentManager {
             system.dispose();
         });
         this.particleSystems = [];
-        this.dustSystem = null;
+        
+        if (this.entityPursuitInterval) {
+            clearInterval(this.entityPursuitInterval);
+        }
     }
 }

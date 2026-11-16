@@ -12,9 +12,7 @@ export class OpeningSequence {
         this.cameraStartRotation = null;
         this.triggersActivated = {
             objectLook: false,
-            firstMovement: false,
         };
-        this.stepCount = 0;
     }
 
     start() {
@@ -40,8 +38,7 @@ export class OpeningSequence {
         this.cameraStartRotation = camera.rotation.clone();
         this.introFlickered = false;
         this.introStartedAt = performance.now();
-        player.resetInput();
-        player.controlsLocked = true;
+        this.setPlayerLocked(true);
         this.showIntroOverlay();
 
         this.skipHandler = (event) => {
@@ -78,10 +75,7 @@ export class OpeningSequence {
             window.removeEventListener("keydown", this.skipHandler);
             this.skipHandler = null;
         }
-        if (this.systems.playerController) {
-            this.systems.playerController.resetInput();
-            this.systems.playerController.controlsLocked = false;
-        }
+        this.setPlayerLocked(false);
         this.scene.getEngine().getRenderingCanvas()?.focus();
 
         const overlay = document.getElementById("openingIntro");
@@ -91,6 +85,21 @@ export class OpeningSequence {
         }
         this.showControlHint();
         console.log("Opening intro finished; player controls enabled");
+    }
+
+    // PlayerController versi baru mengunci input lewat `frozen` (bukan controlsLocked).
+    setPlayerLocked(locked) {
+        const player = this.systems.playerController;
+        if (!player) return;
+        player.frozen = locked;
+        if (player.keys) {
+            for (const key of Object.keys(player.keys)) player.keys[key] = false;
+        }
+        if (player.mouseMovement) {
+            player.mouseMovement.x = 0;
+            player.mouseMovement.y = 0;
+        }
+        if (typeof player.resetInput === "function") player.resetInput();
     }
 
     showIntroOverlay() {
@@ -175,12 +184,5 @@ export class OpeningSequence {
             }
         });
 
-        this.systems.eventSystem.on("player_moved", () => {
-            this.stepCount++;
-            if (this.stepCount === 3 && !this.triggersActivated.firstMovement) {
-                this.triggersActivated.firstMovement = true;
-                this.systems.audioManager.playSound("door_slam", { volume: 0.3 });
-            }
-        });
     }
 }

@@ -1,0 +1,18 @@
+import * as F from "../src/systems/TextureForge.js";
+import fs from "fs";
+const out = process.argv[2] || "/tmp/tex"; fs.mkdirSync(out, { recursive: true });
+const dump = (name, b) => fs.writeFileSync(`${out}/${name}.raw`, Buffer.from(b.data.buffer)) || fs.writeFileSync(`${out}/${name}.txt`, `${b.w} ${b.h}`);
+const T = (n, f) => { const t = Date.now(); const r = f(); console.log(n, Date.now() - t, "ms"); return r; };
+let r;
+r = T("plaster", () => F.genPlaster(1024, 1024)); dump("plaster", r.diff); dump("plaster_n", r.normal);
+r = T("floor", () => F.genTileFloor(1024, 1024)); dump("floor", r.diff);
+r = T("ceiling", () => F.genCeiling(512, 512)); dump("ceiling", r.diff);
+r = T("metal", () => F.genMetal(512, 512)); dump("metal", r.diff);
+r = T("wood", () => F.genWood(512, 512)); dump("wood", r.diff);
+r = T("door", () => F.genDoorLeaf(1024, 2048)); dump("door", r.diff); dump("door_n", r.normal);
+r = T("glass", () => F.genWireGlass(512, 512)); dump("glass", r.diff);
+r = T("mural", () => F.genMural(2048, 1024)); dump("mural", r.diff);
+r = T("ritual", () => F.genRitual(1024)); dump("ritual", r);
+r = T("screen", () => F.genScreen(256, 256)); dump("screen", r);
+r = T("chalk", () => F.genChalkboard(1024, 512)); dump("chalk", r);
+r = T("sheet", () => F.genSheet(512, 512)); dump("sheet", r);

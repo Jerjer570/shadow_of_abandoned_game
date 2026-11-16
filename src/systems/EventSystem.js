@@ -1,8 +1,6 @@
 export class EventSystem {
     constructor() {
         this.listeners = new Map();
-        this.storyTimeouts = new Set();
-        this.storyStopped = false;
         this.gameState = {
             keysCollected: 0,
             notesRead: 0,
@@ -33,8 +31,6 @@ export class EventSystem {
     emit(eventName, data = {}) {
         console.log(`Event: ${eventName}`, data);
         
-        if (eventName === 'game_ended') this.stopStoryTimers();
-
         // Update game state based on events
         this.updateGameState(eventName, data);
         
@@ -76,26 +72,10 @@ export class EventSystem {
         }
     }
     
-    scheduleStory(callback, delay) {
-        if (this.storyStopped) return;
-        const handle = setTimeout(() => {
-            this.storyTimeouts.delete(handle);
-            if (!this.storyStopped) callback();
-        }, delay);
-        this.storyTimeouts.add(handle);
-    }
-
-    stopStoryTimers() {
-        this.storyStopped = true;
-        this.storyTimeouts.forEach((handle) => clearTimeout(handle));
-        this.storyTimeouts.clear();
-    }
-
     checkStoryProgression(eventName, data) {
-        if (this.storyStopped) return;
         // First key collected - trigger entity introduction
         if (eventName === 'key_collected' && this.gameState.keysCollected === 1) {
-            this.scheduleStory(() => {
+            setTimeout(() => {
                 this.emit('story_trigger', { 
                     type: 'entity_introduction',
                     message: 'You hear a faint whisper echoing through the halls...'
@@ -113,7 +93,7 @@ export class EventSystem {
         
         // Generator started - power restoration sequence
         if (eventName === 'generator_started') {
-            this.scheduleStory(() => {
+            setTimeout(() => {
                 this.emit('power_restored');
                 this.emit('story_trigger', {
                     type: 'power_restored',
@@ -130,13 +110,6 @@ export class EventSystem {
             });
         }
         
-        // Restricted area entered - chase sequence
-        if (eventName === 'area_entered' && data.area === 'restricted') {
-            this.emit('story_trigger', {
-                type: 'chase_sequence',
-                message: 'UNAUTHORIZED ACCESS DETECTED'
-            });
-        }
     }
     
     // Story-specific event handlers
@@ -149,9 +122,7 @@ export class EventSystem {
             this.handleEntityEncounter(data, systems);
         });
         
-        this.on('chase_sequence', (data) => {
-            this.handleChaseSequence(data, systems);
-        });
+        
     }
     
     handleStoryTrigger(data, systems) {
@@ -175,11 +146,6 @@ export class EventSystem {
                 this.showMessage(data.message);
                 break;
                 
-            case 'chase_sequence':
-                systems.audioManager.playStinger(3);
-                systems.environmentManager.startChaseSequence();
-                this.showMessage(data.message);
-                break;
         }
     }
     
@@ -194,17 +160,6 @@ export class EventSystem {
         if (systems.playerController.flashlightEnabled) {
             systems.playerController.batteryLevel = Math.max(0, systems.playerController.batteryLevel - 10);
         }
-    }
-    
-    handleChaseSequence(data, systems) {
-        // Start chase music
-        systems.audioManager.playAmbient('entity_pursuit');
-        
-        // Lock doors behind player
-        systems.environmentManager.lockDoorsInArea(this.gameState.currentArea);
-        
-        // Spawn entity pursuit
-        systems.environmentManager.startEntityPursuit();
     }
     
     showMessage(message, duration = 3000) {
@@ -230,7 +185,7 @@ export class EventSystem {
         document.body.appendChild(messageDiv);
         
         setTimeout(() => {
-            document.body.removeChild(messageDiv);
+            messageDiv.remove();
         }, duration);
     }
     

@@ -1,6 +1,5 @@
 import {
 	Vector3,
-	Mesh,
 	MeshBuilder,
 	StandardMaterial,
 	Color3,
@@ -8,7 +7,12 @@ import {
 	Ray,
 } from "@babylonjs/core";
 import { LevelBuilder } from "./LevelBuilder.js";
-import { buildStoryArea, STORY_AREA_LAYOUT, STORY_CORRIDOR_TRANSFORM } from "./StoryAreas.js";
+import { WingBuilder } from "./WingBuilder.js";
+import { attachHDDoor } from "./DoorFactory.js";
+import { attachHDGenerator } from "./GeneratorFactory.js";
+
+// true = gerbang memakai pintu putih HD buatan kode; false = kembali ke model iron_gate.glb lama.
+const USE_HD_DOORS = true;
 
 const FLOOR_Y = 2.52;
 const CEILING_Y = 6.66;
@@ -36,6 +40,7 @@ const HORROR_LAYOUT = {
 	encounter2: { x: 0.2, z: 2.1, radius: 2.5 },
 	restrictedKey: { x: 8.4, z: 3.15, deskAxis: "x" },
 	restrictedGate: { x: 7.6, z: -5.225, axis: "x" },
+	// Main Exit Key dipindah ke Experiment Chamber (LabLayout.js: LAB_ITEMS).
 	gateWidth: 3.1,
 	gateHeight: 4.15,
 };
@@ -47,6 +52,9 @@ export class SceneManager {
 		this.currentScene = null;
 		this.sceneData = new Map();
 		this.levelBuilder = new LevelBuilder(scene, systems);
+		this.wingBuilder = new WingBuilder(scene, systems);
+		// Nama area di HUD yang menimpa nama scene (dipakai saat berada di wing). null = pakai nama scene.
+		this.areaLabel = null;
 
 		// Pelacak objek yang dibuat per scene, supaya bisa dibersihkan
 		this.sceneObjects = [];
@@ -54,11 +62,7 @@ export class SceneManager {
 		this.objectCounter = 0;
 		this.tableMaterial = null;
 
-		this.environmentMeshes = [];
-		this.safeZones = [];
-		this.isTransitioning = false;
 		this.initializeScenes();
-		this.initializeStoryScenes();
 	}
 
 	initializeScenes() {
@@ -163,9 +167,11 @@ export class SceneManager {
 						locked: true,
 						keyId: "restricted_key",
 						requiresName: "Restricted Wing Key",
+						requiresPower: true,
 						size: { w: L.gateWidth, h: L.gateHeight, d: 0.2 },
 					},
 				},
+
 			],
 			triggers: [
 				{
@@ -183,320 +189,11 @@ export class SceneManager {
 			],
 		});
 
-		// ---------------------------------------------------------------
-		// SCENE LAIN: belum dipakai, dikerjakan di Tahap C
-		// ---------------------------------------------------------------
-		this.sceneData.set("asylum_entrance", {
-			name: "Asylum Entrance",
-			playerStart: new Vector3(0, 5, -8),
-			environment: "full_asylum",
-			lighting: "atmospheric",
-			interactables: [
-				{
-					type: "note",
-					position: new Vector3(8, 1, -5),
-					data: {
-						title: "Admission Log - Final Entry",
-						content:
-							"October 15th, 1973: Last patient admitted before the incident. Dr. Hartwell's experimental treatments have shown disturbing side effects. Patients report seeing shadows that move independently of light sources.",
-					},
-				},
-				{
-					type: "key",
-					position: new Vector3(-6, 1, 3),
-					data: { id: "corridor_key", name: "Corridor Access Key" },
-				},
-				{
-					type: "note",
-					position: new Vector3(3, 1, 8),
-					data: {
-						title: "Security Report",
-						content:
-							"Multiple power outages reported in Wing C. Maintenance unable to locate source. Staff reporting unexplained sounds and temperature drops in affected areas.",
-					},
-				},
-				{
-					type: "door",
-					position: new Vector3(0, 0, 18),
-					data: {
-						locked: true,
-						keyId: "corridor_key",
-						targetScene: "main_corridor",
-					},
-				},
-			],
-			triggers: [
-				{
-					position: new Vector3(0, 0, 0),
-					radius: 3,
-					event: "area_entered",
-					data: { area: "entrance" },
-				},
-				{
-					position: new Vector3(5, 0, 5),
-					radius: 2,
-					event: "whisper_sound",
-					data: { intensity: 1 },
-				},
-			],
-		});
-
-		this.sceneData.set("main_corridor", {
-			name: "Main Corridor",
-			playerStart: new Vector3(0, 1.8, 0),
-			environment: "full_asylum",
-			lighting: "atmospheric",
-			interactables: [
-				{
-					type: "note",
-					position: new Vector3(-1.5, 1, 25),
-					data: {
-						title: "Dr. Hartwell's Journal - Day 47",
-						content:
-							"The subjects have begun to change. They speak of shadows that move independently, of whispers in empty rooms. The entity grows stronger with each passing day. I fear we have opened a door that should have remained closed forever.",
-					},
-				},
-				{
-					type: "key",
-					position: new Vector3(1.2, 1, 35),
-					data: { id: "research_key", name: "Research Wing Key" },
-				},
-				{
-					type: "switch",
-					position: new Vector3(-1.8, 1.5, 15),
-					data: { id: "corridor_lights", controls: "lighting" },
-				},
-				{
-					type: "note",
-					position: new Vector3(1.5, 1, 45),
-					data: {
-						title: "Maintenance Log",
-						content:
-							"Electrical systems failing throughout the facility. Lights flicker without cause. Temperature sensors reading impossible values. Recommend immediate evacuation.",
-					},
-				},
-				{
-					type: "door",
-					position: new Vector3(0, 0, 58),
-					data: {
-						locked: true,
-						keyId: "research_key",
-						targetScene: "research_wing",
-					},
-				},
-			],
-			triggers: [
-				{
-					position: new Vector3(0, 0, 10),
-					radius: 2,
-					event: "entity_encounter",
-					data: { intensity: 1 },
-				},
-				{
-					position: new Vector3(0, 0, 30),
-					radius: 2,
-					event: "lights_flicker",
-					data: {},
-				},
-				{
-					position: new Vector3(0, 0, 40),
-					radius: 2,
-					event: "entity_encounter",
-					data: { intensity: 2 },
-				},
-			],
-		});
-
-		this.sceneData.set("research_wing", {
-			name: "Restricted Research Wing",
-			playerStart: new Vector3(0, 1.8, 62),
-			environment: "full_asylum",
-			lighting: "atmospheric",
-			interactables: [
-				{
-					type: "note",
-					position: new Vector3(-8, 1, 68),
-					data: {
-						title: "FINAL LOG - EVACUATION ORDER",
-						content:
-							"Day 73: IMMEDIATE EVACUATION ORDERED. The entity has fully manifested. It feeds on electrical energy, grows stronger in darkness. All research data must be destroyed. May God forgive us for what we have unleashed upon this world.",
-					},
-				},
-				{
-					type: "note",
-					position: new Vector3(10, 1, 72),
-					data: {
-						title: "Experiment Log - Subject 23",
-						content:
-							"Subject shows complete neural restructuring. Consciousness appears to exist partially outside physical form. Entity attachment confirmed. Termination of experiment recommended immediately.",
-					},
-				},
-				{
-					type: "key",
-					position: new Vector3(-12, 1, 75),
-					data: { id: "basement_key", name: "Basement Access Key" },
-				},
-				{
-					type: "generator",
-					position: new Vector3(8, 0, 78),
-					data: { id: "main_generator", powers: "facility_lighting" },
-				},
-				{
-					type: "door",
-					position: new Vector3(0, 0, 85),
-					data: {
-						locked: true,
-						keyId: "basement_key",
-						targetScene: "basement",
-					},
-				},
-			],
-			triggers: [
-				{
-					position: new Vector3(0, 0, 65),
-					radius: 4,
-					event: "area_entered",
-					data: { area: "research_wing" },
-				},
-				{
-					position: new Vector3(-5, 0, 70),
-					radius: 2,
-					event: "entity_encounter",
-					data: { intensity: 3 },
-				},
-				{
-					position: new Vector3(5, 0, 80),
-					radius: 2,
-					event: "generator_proximity",
-					data: {},
-				},
-			],
-		});
-
-		this.sceneData.set("basement", {
-			name: "Basement - The Source",
-			playerStart: new Vector3(0, -2.2, 80),
-			environment: "full_asylum",
-			lighting: "atmospheric",
-			interactables: [
-				{
-					type: "note",
-					position: new Vector3(-6, -3, 85),
-					data: {
-						title: "The Truth - Dr. Hartwell's Final Words",
-						content:
-							"The entity was never created by our experiments. We merely provided it a doorway into our reality. It has existed in the spaces between consciousness and matter for eons. Our research only gave it form. The only way to stop it is to sever its connection to this place. The generator must be destroyed.",
-					},
-				},
-				{
-					type: "switch",
-					position: new Vector3(0, -3, 88),
-					data: { id: "entity_banishment", controls: "final_sequence" },
-				},
-			],
-			triggers: [
-				{
-					position: new Vector3(0, -4, 82),
-					radius: 3,
-					event: "area_entered",
-					data: { area: "basement" },
-				},
-				{
-					position: new Vector3(0, -4, 85),
-					radius: 2,
-					event: "entity_encounter",
-					data: { intensity: 4, final: true },
-				},
-			],
-		});
 	}
 
 	// ---------------------------------------------------------------
 	// MEMUAT SCENE
 	// ---------------------------------------------------------------
-
-	initializeStoryScenes() {
-		const restricted = STORY_AREA_LAYOUT.restricted_area;
-		const lab = STORY_AREA_LAYOUT.experiment_lab;
-		const doorPosition = new Vector3(0, STORY_AREA_LAYOUT.height / 2, STORY_AREA_LAYOUT.doorZ);
-		const doorSize = { w: STORY_AREA_LAYOUT.width, h: STORY_AREA_LAYOUT.height, d: 0.2 };
-		this.sceneData.set("restricted_area", {
-			name: "Restricted Wing", environment: "restricted_area", lighting: "story",
-			playerStart: new Vector3(0, 1.8, 2), ambient: "ambient_basement",
-			interactables: [
-				...restricted.batteries.map((position) => ({ type: "battery", position: position.clone(), data: { amount: 35 } })),
-				{ type: "door", position: doorPosition.clone(), data: {
-					id: "laboratory_door", locked: false, size: { ...doorSize }, nextScene: "experiment_lab",
-				} },
-			], triggers: [],
-		});
-		// Teks dokumen terakhir memakai salinan data existing, bukan narasi baru.
-		const finalNote = this.sceneData.get("basement").interactables.find((item) => item.type === "note");
-		this.sceneData.set("experiment_lab", {
-			name: "Experiment Laboratory", environment: "experiment_lab", lighting: "story",
-			playerStart: new Vector3(0, 1.8, 2), ambient: "generator_running",
-			interactables: [
-				{ type: "note", snapToFloor: true, deskAxis: "z", position: lab.note.clone(), data: { ...finalNote.data, id: "doc_final" } },
-				...lab.batteries.map((position) => ({ type: "battery", position: position.clone(), data: { amount: 40 } })),
-				{ type: "generator", position: lab.generator.clone(), data: { id: "experiment_generator", powers: "facility_lighting" } },
-				{ type: "switch", position: lab.switch.clone(), data: { id: "destruction_switch", controls: "final_sequence" } },
-				{ type: "door", position: doorPosition.clone(), data: { id: "asylum_exit", locked: false, ending: "A", size: { ...doorSize } } },
-			], triggers: [],
-		});
-	}
-
-	async transitionTo(sceneName) {
-		if (this.isTransitioning || this.systems.playerController.controlsLocked || !this.sceneData.has(sceneName)) return;
-		this.isTransitioning = true;
-		const player = this.systems.playerController;
-		player.controlsLocked = true;
-		player.resetInput();
-		const cover = document.createElement("div");
-		cover.className = "scene-transition";
-		cover.textContent = "Entering " + this.sceneData.get(sceneName).name + "…";
-		document.body.appendChild(cover);
-		try {
-			await new Promise((resolve) => setTimeout(resolve, 450));
-			await this.loadScene(sceneName);
-			await new Promise((resolve) => setTimeout(resolve, 250));
-		} catch (error) {
-			console.error("Scene transition failed:", error);
-			this.systems.interactionManager.showMessage("Area could not be loaded. Please reload the game.");
-		} finally {
-			cover.remove();
-			this.isTransitioning = false;
-			player.resetInput();
-			player.controlsLocked = false;
-		}
-	}
-
-	setupProgression() {
-		let endingRequested = false;
-		const observer = this.scene.onBeforeRenderObservable.add(() => {
-			if (endingRequested || this.isTransitioning || this.systems.playerController.controlsLocked) return;
-			const p = this.scene.activeCamera.position;
-			const doors = [...this.systems.interactionManager.interactables.values()];
-			if (this.currentScene === "horror_scene") {
-				const gate = doors.find((item) => item.data.id === "restricted_gate");
-				if (gate?.data.isOpen && p.x > HORROR_LAYOUT.restrictedGate.x + 0.5 && Math.abs(p.z - HORROR_LAYOUT.restrictedGate.z) < 1.6) {
-					void this.transitionTo("restricted_area");
-				}
-			} else {
-				for (const door of doors) {
-					if (!door.data.isOpen) continue;
-					const target = door.mesh.position;
-					if (p.z <= target.z + 0.35 || Math.abs(p.x - target.x) > (door.data.size?.w || 3) / 2) continue;
-					if (door.data.nextScene) void this.transitionTo(door.data.nextScene);
-					if (door.data.ending) {
-						endingRequested = true;
-						this.systems.eventSystem.emit("ending_requested", { ending: door.data.ending });
-						break;
-					}
-				}
-			}
-		});
-		this.triggerObservers.push(observer);
-	}
 
 	async loadScene(sceneName) {
 		const sceneData = this.sceneData.get(sceneName);
@@ -512,21 +209,14 @@ export class SceneManager {
 
 		console.log(`Loading scene: ${sceneData.name}`);
 
-		// Story corridors are shifted to floor y=0; probe below their 4.15 m roof.
-		this.floorProbeHeight = sceneData.lighting === "story" ? 1.8 : FLOOR_PROBE_HEIGHT;
+		// Set player position
 		this.scene.activeCamera.position.copyFrom(sceneData.playerStart);
 
-		// Track explicit ownership: background monster/prop loads are not scene geometry.
-		const environment = await this.loadEnvironment(sceneData.environment);
-		this.environmentMeshes = environment?.meshes || [];
-		if (sceneData.lighting === "story") this.scene.activeCamera.rotation.set(0, 0, 0);
+		// Load environment
+		await this.loadEnvironment(sceneData.environment);
 
 		// Setup lighting
-		if (sceneData.lighting === "story") {
-			this.systems.environmentManager.setupStoryLighting(sceneName, this.safeZones);
-		} else {
-			this.setupLighting(sceneData.lighting);
-		}
+		this.setupLighting(sceneData.lighting);
 
 		// GLB dipanaskan sekali sebelum pembuatan anchor yang sinkron.
 		await this.systems.propLibrary.preload();
@@ -537,18 +227,16 @@ export class SceneManager {
 		// Setup triggers
 		this.setupTriggers(sceneData.triggers);
 
+		// Wing tambahan (Infirmary, Cell Block, Boiler Room) dan pintu-pintunya
+		this.areaLabel = null;
+		if (sceneName === "horror_scene") {
+			this.wingBuilder.build(this);
+		}
+
 		// Start ambient audio
-		this.systems.audioManager.playAmbient(sceneData.ambient || "ambient_asylum");
+		this.systems.audioManager.playAmbient("ambient_asylum");
 
 		this.currentScene = sceneName;
-		this.setupProgression();
-		if (sceneName === "restricted_area") {
-			this.systems.environmentManager.startEntityPursuit();
-			this.systems.interactionManager.showMessage("Stay in the light. Reach the laboratory ahead.", 6500);
-		} else if (sceneName === "experiment_lab") {
-			this.systems.environmentManager.startEntityPursuit();
-			this.systems.interactionManager.showMessage("Escape through EXIT, or use the red switch to destroy the machine.", 8500);
-		}
 
 		// Emit scene loaded event
 		this.systems.eventSystem.emit("scene_loaded", {
@@ -560,33 +248,15 @@ export class SceneManager {
 	}
 
 	async loadEnvironment(environmentType) {
-		if (environmentType === "restricted_area" || environmentType === "experiment_lab") {
-			const corridor = await this.loadHorrorSceneGLB({ fallback: false });
-			let corridorRoot;
-			if (corridor) {
-				// A mesh wrapper is tracked by environmentMeshes, including its whole hierarchy.
-				const root = new Mesh(`${environmentType}_corridor_root`, this.scene);
-				corridorRoot = root;
-				root.isPickable = false;
-				root.checkCollisions = false;
-				root.position.copyFrom(STORY_CORRIDOR_TRANSFORM.position);
-				root.rotation.y = STORY_CORRIDOR_TRANSFORM.rotationY;
-				[...corridor.meshes, ...(corridor.transformNodes || [])]
-					.filter((node) => !node.parent)
-					.forEach((node) => { node.parent = root; });
-				corridor.meshes.forEach((mesh) => mesh.computeWorldMatrix(true));
-			}
-			const area = buildStoryArea(this.scene, environmentType, { useCorridor: Boolean(corridor) });
-			this.safeZones = area.safeZones;
-			return { meshes: [...(corridor?.meshes || []), ...(corridorRoot ? [corridorRoot] : []), ...area.meshes] };
-		} else if (environmentType === "horror_scene_glb") {
-			return this.loadHorrorSceneGLB();
+		if (environmentType === "horror_scene_glb") {
+			await this.loadHorrorSceneGLB();
 		} else {
-			return this.createFullAsylum();
+			// "full_asylum" dan lainnya: coba GLB, jika gagal pakai koridor prosedural
+			await this.createFullAsylum();
 		}
 	}
 
-	async loadHorrorSceneGLB({ fallback = true } = {}) {
+	async loadHorrorSceneGLB() {
 		try {
 			const result = await SceneLoader.ImportMeshAsync(
 				"",
@@ -606,7 +276,6 @@ export class SceneManager {
 
 				mesh.checkCollisions = true;
 				mesh.isPickable = true;
-				if (mesh.material) mesh.material.maxSimultaneousLights = 10;
 
 				if (!mesh.material) {
 					const material = new StandardMaterial(
@@ -616,6 +285,15 @@ export class SceneManager {
 					material.diffuseColor = new Color3(0.4, 0.4, 0.4);
 					material.specularColor = new Color3(0.1, 0.1, 0.1);
 					mesh.material = material;
+				}
+
+				// Kualitas HD: filter anisotropik 16x dan batas lampu per material dinaikkan
+				// (bawaan 4 sehingga lampu hall tidak terpakai).
+				if (mesh.material) {
+					mesh.material.maxSimultaneousLights = 6;
+					["albedoTexture", "diffuseTexture", "bumpTexture", "emissiveTexture"].forEach((slot) => {
+						if (mesh.material[slot]) mesh.material[slot].anisotropicFilteringLevel = 16;
+					});
 				}
 
 				// Pengaman untuk GLB lama: sisi belakang koridor adalah dinding solid.
@@ -647,16 +325,17 @@ export class SceneManager {
 			return result;
 		} catch (error) {
 			console.warn("Failed to load corridor_baru.glb; memakai koridor cadangan:", error);
-			this.scene.getEngine().hideLoadingUI();
-			if (!fallback) return null;
-			const previousMeshes = new Set(this.scene.meshes);
+			// Fallback to procedural corridor
 			this.createFallbackCorridor();
-			return { meshes: this.scene.meshes.filter((mesh) => !previousMeshes.has(mesh)) };
+			this.scene.getEngine().hideLoadingUI();
+			return null;
 		}
 	}
 
 	async createFullAsylum() {
-		return this.loadHorrorSceneGLB();
+		// loadHorrorSceneGLB sudah membuat fallback dan mengembalikan null saat gagal.
+		await this.loadHorrorSceneGLB();
+		this.scene.getEngine().hideLoadingUI();
 	}
 
 	// ---------------------------------------------------------------
@@ -816,7 +495,7 @@ export class SceneManager {
 	// Mencari tinggi lantai di bawah titik (x, z). Mengembalikan null jika tidak ketemu.
 	findFloorY(x, z) {
 		const ray = new Ray(
-			new Vector3(x, this.floorProbeHeight ?? FLOOR_PROBE_HEIGHT, z),
+			new Vector3(x, FLOOR_PROBE_HEIGHT, z),
 			new Vector3(0, -1, 0),
 			20
 		);
@@ -840,7 +519,6 @@ export class SceneManager {
 	makeMaterial(name, diffuse, emissive = null, specular = 0.05) {
 		const mat = new StandardMaterial(name, this.scene);
 		mat.diffuseColor = diffuse;
-		mat.maxSimultaneousLights = 10;
 		mat.specularColor = new Color3(specular, specular, specular);
 		if (emissive) mat.emissiveColor = emissive;
 		return mat;
@@ -865,7 +543,7 @@ export class SceneManager {
 
 			if (item.type === "battery") {
 				const mesh = this.systems.interactionManager.spawnBattery(
-					new Vector3(pos.x, this.floorProbeHeight ?? FLOOR_PROBE_HEIGHT, pos.z),
+					new Vector3(pos.x, FLOOR_PROBE_HEIGHT, pos.z),
 					data.amount ?? 30,
 					true
 				);
@@ -923,7 +601,10 @@ export class SceneManager {
 				case "key": {
 					mesh = MeshBuilder.CreateBox(id, { width: 0.08, height: 0.04, depth: 0.28 }, this.scene);
 					mesh.position.set(pos.x, snap ? baseY + 0.04 : pos.y, pos.z);
-					mesh.material = this.makeMaterial(`${id}_mat`, new Color3(0.8, 0.7, 0.2), new Color3(0.5, 0.4, 0.1), 0.3);
+					const isFuse = data.color === "fuse";
+					mesh.material = isFuse
+						? this.makeMaterial(`${id}_mat`, new Color3(0.2, 0.55, 0.9), new Color3(0.1, 0.3, 0.55), 0.3)
+						: this.makeMaterial(`${id}_mat`, new Color3(0.8, 0.7, 0.2), new Color3(0.5, 0.4, 0.1), 0.3);
 					mesh.metadata = { isPickup: true };
 					break;
 				}
@@ -940,6 +621,13 @@ export class SceneManager {
 					mesh.material = this.makeMaterial(`${id}_mat`, new Color3(0.4, 0.4, 0.4), new Color3(1, 0, 0));
 					break;
 				}
+				case "machine": {
+					// Konsol mesin lab: tempat pemain memilih ending (Scene 6 storyboard).
+					mesh = MeshBuilder.CreateBox(id, { width: 0.9, height: 0.85, depth: 0.45 }, this.scene);
+					mesh.position.set(pos.x, snap ? floorY + 0.425 : pos.y + 0.425, pos.z);
+					mesh.material = this.makeMaterial(`${id}_mat`, new Color3(0.22, 0.24, 0.26), new Color3(0.15, 0.85, 0.65), 0.55);
+					break;
+				}
 				default: {
 					mesh = MeshBuilder.CreateBox(id, { size: 0.5 }, this.scene);
 					mesh.position.set(pos.x, snap ? floorY + 0.25 : pos.y, pos.z);
@@ -949,18 +637,51 @@ export class SceneManager {
 
 			this.sceneObjects.push(mesh);
 			this.systems.interactionManager.registerInteractable(mesh, item.type, data);
+			if (item.type === "generator" && USE_HD_DOORS && this.systems.texturePool) {
+				try {
+					attachHDGenerator(this.scene, mesh, this.systems.texturePool);
+				} catch (error) {
+					console.warn("[SceneManager] Generator HD gagal; kotak biasa dipakai:", error);
+					mesh.visibility = 1;
+				}
+			}
 			if (item.type === "door") {
 				const size = data.size || { w: 3.1, h: 4.15, d: 0.2 };
-				this.systems.propLibrary.attach("iron_gate", mesh, {
-					surfaceY: floorY,
-					width: size.w,
-					height: size.h,
-					depth: size.d,
-					rotationY: data.axis === "x" ? Math.PI / 2 : 0,
-				});
+				let hdOk = false;
+				if (USE_HD_DOORS && this.systems.texturePool) {
+					try {
+						const restricted = data.id === "restricted_gate";
+						attachHDDoor(this.scene, mesh, {
+							pool: this.systems.texturePool,
+							type: "double",
+							width: size.w,
+							height: size.h,
+							axis: data.axis,
+							variant: restricted ? "hazard" : "plain",
+							sign: restricted ? "RESTRICTED" : "WARD A",
+							signY: 2.35,
+							signZ: 0.2,
+							signStyle: restricted
+								? { bg: "#3a0b0b", fg: "#ff6a5a", border: "#b02a22", planeW: 1.3 }
+								: { bg: "#1b1b1b", fg: "#e9e4d2", border: "#777", planeW: 1.3 },
+						});
+						hdOk = true;
+					} catch (error) {
+						console.warn("[SceneManager] Pintu HD gagal; memakai iron_gate.glb:", error);
+					}
+				}
+				if (!hdOk) {
+					this.systems.propLibrary.attach("iron_gate", mesh, {
+						surfaceY: floorY,
+						width: size.w,
+						height: size.h,
+						depth: size.d,
+						rotationY: data.axis === "x" ? Math.PI / 2 : 0,
+					});
+				}
 			} else if (item.type === "note") {
 				this.systems.propLibrary.attach("document", mesh, { surfaceY: baseY });
-			} else if (item.type === "key") {
+			} else if (item.type === "key" && !data.noProp) {
 				this.systems.propLibrary.attach(data.id === "restricted_key" ? "key_restricted" : "key_ward", mesh, { surfaceY: baseY });
 			}
 
@@ -1014,22 +735,14 @@ export class SceneManager {
 		this.sceneObjects.forEach((obj) => {
 			if (obj && !obj.isDisposed()) {
 				this.systems.propLibrary?.removeHighlight(obj);
-				const anchorMaterial = obj.material;
-				const ownsMaterial = obj.name !== undefined && obj.material !== this.tableMaterial;
-				const propMaterials = obj.metadata?.propOwnedMaterials || [];
 				obj.dispose();
-				propMaterials.forEach((material) => material.dispose());
-				if (ownsMaterial) anchorMaterial?.dispose();
 			}
 		});
 		this.sceneObjects = [];
-		this.environmentMeshes.forEach((mesh) => {
-			if (!mesh.isDisposed()) mesh.dispose(false, true);
-		});
-		this.environmentMeshes = [];
-		this.safeZones = [];
-		this.systems.environmentManager.stopEntityPursuit();
-		this.systems.interactionManager.updateInteractionUI(null);
+
+		// Hapus wing tambahan
+		this.wingBuilder?.dispose();
+		this.areaLabel = null;
 
 		// Dispose of level builder resources
 		if (this.levelBuilder) {
@@ -1040,9 +753,11 @@ export class SceneManager {
 		// Clear interactables
 		this.systems.interactionManager.dispose();
 
+		// Sembunyikan monster jika sedang aktif
+		this.systems.monsterManager?.despawn();
 
 		// Stop ambient sounds
-		["ambient_asylum", "ambient_basement", "ambient_corridor", "generator_running", "entity_pursuit"].forEach((name) => this.systems.audioManager.stopAmbient(name));
+		this.systems.audioManager.stopAmbient("ambient_asylum");
 	}
 
 	getCurrentScene() {
