@@ -19,9 +19,10 @@ export const MONSTER_CONFIG = {
 	// Ukuran & arah model
 	height: 2.3, // tinggi akhir monster (meter)
 	scaleOverride: null, // isi angka (mis. 0.01) jika auto-scale salah
+	// Model smiley_monster menghadap +Z, jadi tanpa offset tambahan.
 	// Jika monster berjalan mundur/menyamping, ubah: 0, Math.PI/2, Math.PI, -Math.PI/2
 	// (saat game berjalan: tekan O untuk memutar 90 derajat dan lihat hasilnya di konsol).
-	facingOffset: Math.PI,
+	facingOffset: 0,
 
 	// Kemunculan
 	spawnDelay: 1.0, // jeda (detik) setelah pintu terbuka sebelum monster muncul
@@ -37,6 +38,15 @@ export const MONSTER_CONFIG = {
 	catchDistance: 1.15, // jarak tertangkap
 	bodyRadius: 0.5,
 	turnRate: 8,
+
+	// Storyboard Scene 3: pemain aman selama berada di bawah cahaya lampu.
+	lightHoldDistance: 3.6, // monster berhenti di radius ini saat pemain terkena lampu
+	flashlightSlow: 0.55, // senter hanya memperlambat (tidak menghentikan) monster
+
+	// Sekuens tertangkap
+	lungeDuration: 1.4, // detik monster melesat menabrak kamera
+	caughtVeilAt: 1.5, // detik layar mulai menghitam
+	caughtOverlayAt: 2.7, // detik overlay horor muncul
 };
 
 function wrapAngle(a) {
@@ -363,6 +373,10 @@ export class MonsterManager {
 	// ---------------------------------------------------------------
 
 	update(deltaTime) {
+		if (this.state === "caught") {
+			this.updateCaught(Math.min(Math.max(deltaTime, 0), 0.05));
+			return;
+		}
 		if (this.state !== "spawning" && this.state !== "chasing") return;
 
 		const dt = Math.min(Math.max(deltaTime, 0), 0.05);
@@ -390,7 +404,20 @@ export class MonsterManager {
 		}
 
 		const desired = toPlayer.scale(1 / dist);
-		const speed = dist > this.cfg.catchUpDistance ? this.cfg.catchUpSpeed : this.cfg.chaseSpeed;
+
+		// Storyboard Scene 3: entitas tidak berani masuk ke bawah cahaya lampu.
+		const light = this.playerLightState();
+		this.updateLightFeedback(light);
+		if (light.lamp && dist <= this.cfg.lightHoldDistance) {
+			this.faceDirection(desired, dt);
+			this.updateAudio(dt, dist);
+			this.pivot.position.y = this.floorY;
+			return;
+		}
+
+		const speedBase = dist > this.cfg.catchUpDistance ? this.cfg.catchUpSpeed : this.cfg.chaseSpeed;
+		// Senter hanya memperlambat, tidak menghentikan pengejaran.
+		const speed = speedBase * (light.flashlight && !light.lamp ? this.cfg.flashlightSlow : 1);
 		const step = Math.min(speed * dt, dist - this.cfg.catchDistance * 0.5);
 		const moveDir = this.pickDirection(desired, step);
 
@@ -474,6 +501,35 @@ export class MonsterManager {
 		}
 	}
 
+	// ---------------------------------------------------------------
+	// CAHAYA: pemain aman selama berada di bawah lampu (Scene 3 storyboard)
+	// ---------------------------------------------------------------
+
+	playerLightState() {
+		const player = this.scene.activeCamera.position;
+		const lamps = this.systems.environmentManager?.activeLamps?.() || [];
+		const lamp = lamps.some((l) => {
+			if (!l.isEnabled() || l.intensity <= 0.05) return false;
+			const p = l.getAbsolutePosition();
+			const d = Math.hypot(p.x - player.x, p.z - player.z);
+			return d < (l.range || 10) * 0.55;
+		});
+		const pc = this.systems.playerController;
+		const flashlight = !!(pc && pc.flashlightEnabled && pc.batteryLevel > 0);
+		return { lamp, flashlight };
+	}
+
+	updateLightFeedback(light) {
+		const ui = this.systems.interactionManager;
+		if (light.lamp && !this.wasLit) {
+			this.wasLit = true;
+			ui?.showMessage("The light holds it back. Stay under the lamps.", 4200);
+		} else if (!light.lamp && this.wasLit) {
+			this.wasLit = false;
+			ui?.showMessage("It moves faster in the dark.", 3600);
+		}
+	}
+
 	faceDirection(dir, dt) {
 		if (dir.lengthSquared() < 1e-6) return;
 		const target = Math.atan2(dir.x, dir.z) + this.cfg.facingOffset;
@@ -489,46 +545,86 @@ export class MonsterManager {
 	onCaught() {
 		if (this.state === "caught") return;
 		this.state = "caught";
+		this.caughtTime = 0;
+		this.caughtVeiled = false;
+		this.caughtOverlayShown = false;
 
 		const player = this.systems.playerController;
 		if (player) player.frozen = true;
-		this.systems.audioManager.stopAmbient("entity_pursuit");
 		if (document.pointerLockElement) document.exitPointerLock();
 
-		// Kamera menatap wajah monster
-		const head = this.pivot.position.clone();
-		head.y += this.cfg.height * 0.85;
-		this.scene.activeCamera.setTarget(head);
-
-		this.systems.audioManager.playSound("entity_growl", { volume: 1.0 });
-		this.systems.audioManager.playSound("static", { volume: 1.0 });
+		const audio = this.systems.audioManager;
+		audio.stopAmbient("entity_pursuit");
+		audio.playSound("entity_growl", { volume: 1.0 });
+		audio.playSound("static", { volume: 0.9 });
 		this.systems.environmentManager?.flickerLights?.();
+		this.systems.interactionManager?.updateInteractionUI?.(null);
 
-		const flash = document.createElement("div");
-		flash.style.cssText =
-			"position:fixed;inset:0;background:#a00;opacity:0;z-index:999;pointer-events:none;transition:opacity 1.2s ease-in;";
-		document.body.appendChild(flash);
-		requestAnimationFrame(() => (flash.style.opacity = "0.55"));
+		// FOV dipersempit: wajah monster terasa menempel di kamera.
+		const cam = this.scene.activeCamera;
+		this.savedFov = cam.fov;
+		cam.fov = 1.05;
 
-		setTimeout(() => {
-			flash.remove();
+		// Monster sedikit terangkat lalu melebar: siluet besar memenuhi layar.
+		if (this.pivot) this.pivot.rotation.z = 0;
+	}
+
+	// Pergerakan kamera + monster selama sekuens tertangkap.
+	updateCaught(dt) {
+		if (!this.pivot) return;
+		const cam = this.scene.activeCamera;
+		this.caughtTime += dt;
+
+		const lunge = Math.min(1, this.caughtTime / this.cfg.lungeDuration);
+		const forward = this.cameraForward();
+		const distance = 1.75 - 1.05 * lunge; // 1.75 m -> 0.70 m dari kamera
+		this.pivot.position.set(
+			cam.position.x + forward.x * distance,
+			this.floorY,
+			cam.position.z + forward.z * distance
+		);
+		this.faceDirection(new Vector3(-forward.x, 0, -forward.z), dt);
+
+		// Kamera dipaksa menatap wajah, dengan guncangan yang mereda.
+		const head = this.pivot.position.clone();
+		head.y += this.cfg.height * 0.78;
+		const shake = (1 - lunge) * 0.5 + 0.08;
+		head.x += (Math.random() - 0.5) * shake;
+		head.y += (Math.random() - 0.5) * shake * 0.6;
+		head.z += (Math.random() - 0.5) * shake;
+		cam.setTarget(head);
+		cam.fov = 1.05 - 0.15 * lunge;
+
+		if (!this.caughtVeiled && this.caughtTime >= this.cfg.caughtVeilAt) {
+			this.caughtVeiled = true;
+			const veil = document.createElement("div");
+			veil.className = "caught-veil";
+			document.body.appendChild(veil);
+			requestAnimationFrame(() => veil.classList.add("show"));
+			this.systems.audioManager.stopSound("heartbeat");
+			this.systems.audioManager.playSound("entity_whisper", { volume: 0.85 });
+		}
+
+		if (!this.caughtOverlayShown && this.caughtTime >= this.cfg.caughtOverlayAt) {
+			this.caughtOverlayShown = true;
 			this.showCaughtOverlay();
-		}, 1800);
+		}
 	}
 
 	showCaughtOverlay() {
+		this.systems.audioManager.playSound("static", { volume: 1.0 });
 		const overlay = document.createElement("div");
-		overlay.className = "document-overlay";
+		overlay.className = "document-overlay ending-overlay caught-overlay";
 		overlay.innerHTML = `
             <div class="document-content">
-                <div class="document-header">
-                    <h3>You Were Caught</h3>
-                </div>
+                <h1 class="caught-title">IT SAW YOU</h1>
                 <div class="document-body">
-                    <p>The smiling thing found you in the dark. The asylum keeps what it takes.</p>
+                    <p class="caught-line">The smile opens wider than a face should.</p>
+                    <p class="caught-line">You do not hear yourself scream.</p>
+                    <p class="caught-line">Blackwood keeps what it takes.</p>
                 </div>
                 <div class="document-footer">
-                    <button id="monsterRetry" style="background: #ff6b6b; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Try Again</button>
+                    <button id="monsterRetry" style="background: #7a0d0d; color: #f4ece4; border: 1px solid #b84040; padding: 12px 24px; cursor: pointer; font: inherit; letter-spacing: 0.12em;">Try Again</button>
                 </div>
             </div>
         `;

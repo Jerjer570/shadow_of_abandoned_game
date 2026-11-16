@@ -258,3 +258,80 @@
     from { width: 0; }
     to { width: 100%; }
 }
+
+/* ---- Tertangkap entitas: tirai gelap + overlay horor ---- */
+.caught-veil {
+    position: fixed;
+    inset: 0;
+    /* Di bawah overlay dokumen (z-index 1000 dari index.html) tapi di atas canvas + HUD. */
+    z-index: 990;
+    pointer-events: none;
+    opacity: 0;
+    background:
+        radial-gradient(circle at 50% 42%, rgba(96, 0, 0, 0.9), rgba(0, 0, 0, 0.98) 68%),
+        #000;
+    transition: opacity 900ms ease-in;
+}
+
+.caught-veil.show {
+    opacity: 1;
+}
+
+.caught-overlay {
+    background: #000;
+    cursor: auto;
+    animation: caughtIn 700ms ease-out;
+}
+
+.caught-overlay .document-content {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: #b9b3a9;
+    text-align: center;
+}
+
+.caught-title {
+    margin: 0 0 28px;
+    color: #ff2d2d;
+    font-family: 'Courier New', monospace;
+    font-size: clamp(30px, 7vw, 58px);
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    text-shadow: 0 0 22px rgba(255, 0, 0, 0.45);
+    animation: caughtFlicker 2.6s steps(1) infinite;
+}
+
+.caught-line {
+    margin: 10px 0;
+    opacity: 0;
+    font-size: 16px;
+    line-height: 1.8;
+    letter-spacing: 0.04em;
+    animation: caughtLine 900ms ease forwards;
+}
+
+.caught-line:nth-child(1) { animation-delay: 350ms; }
+.caught-line:nth-child(2) { animation-delay: 1500ms; }
+.caught-line:nth-child(3) { animation-delay: 2700ms; color: #e8dccd; }
+
+@keyframes caughtIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes caughtLine {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes caughtFlicker {
+    0%, 100% { opacity: 1; }
+    7% { opacity: 0.2; }
+    9% { opacity: 1; }
+    38% { opacity: 0.55; }
+    41% { opacity: 1; }
+    72% { opacity: 0.1; }
+    74% { opacity: 1; }
+    91% { opacity: 0.4; }
+}

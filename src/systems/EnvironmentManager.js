@@ -343,13 +343,11 @@ export class EnvironmentManager {
             warningLight.diffuse = new Color3(1, 0, 0);
             this.lights.push(warningLight);
             
-            // Pulsing animation
-            const pulseAnimation = Animation.CreateAndStartAnimation(
-                `pulse_${index}`, warningLight, 'intensity', 
-                30, 60, 0.6, 0.1, 1, () => {
-                    // Loop the animation
-                    pulseAnimation.restart();
-                }
+            // Pulsing animation: 0.6 -> 0.1 berulang (loopmode CYCLE).
+            // Jangan kirim callback sebagai easingFunction: Babylon akan memanggil easingFunction.ease().
+            Animation.CreateAndStartAnimation(
+                `pulse_${index}`, warningLight, 'intensity',
+                30, 60, 0.6, 0.1, Animation.ANIMATIONLOOPMODE_CYCLE
             );
         });
     }

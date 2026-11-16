@@ -101,6 +101,13 @@ const MISSIONS = [
 		target: (area) => (area === "lab" ? at(O.lab, 18.9, 7.0) : hall(10.2, -6.62)),
 	},
 	{
+		id: "apparatus",
+		text: "Decide the fate of the apparatus",
+		hint: "The console on the east side of the machine stage.",
+		requires: ["exit_key"],
+		target: (area) => (area === "lab" ? at(O.lab, 16.6, 7.0) : hall(10.2, -6.62)),
+	},
+	{
 		id: "escape",
 		text: "Run to the Main Exit and escape!",
 		hint: "The door where you woke up, at the far west end.",
@@ -314,8 +321,10 @@ export class MissionManager {
 				if (this.docs.size === TOTAL_DOCS) this.toast("You have read every document.");
 			}
 		});
+		ev.on("ending_choice_requested", () => this.complete("apparatus"));
 		ev.on("game_escaped", () => {
 			this.finished = true;
+			this.complete("apparatus");
 			this.complete("escape");
 		});
 	}
