@@ -55,6 +55,25 @@ export const PROP_CONFIG = {
 		tint: new Color3(1, 1, 1),
 		highlight: null,
 	},
+	wheelchair: {
+		file: "old_rusty_wheelchair.glb",
+		height: 1.05,
+		tint: new Color3(1, 1, 1),
+		highlight: null,
+	},
+	filing_cabinet: {
+		file: "rusty_filing_cabinet.glb",
+		height: 1.65,
+		tint: new Color3(1, 1, 1),
+		highlight: null,
+	},
+	asylum_bed: {
+		file: "asylum_bed.glb",
+		height: 0.85,
+		rotation: new Vector3(0, Math.PI / 2, 0),
+		tint: new Color3(1, 1, 1),
+		highlight: null,
+	},
 };
 
 function transformedBounds(bounds, rotation) {

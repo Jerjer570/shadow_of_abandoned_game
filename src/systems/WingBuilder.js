@@ -131,6 +131,27 @@ export class WingBuilder {
 		return mesh;
 	}
 
+	placeProp(name, x, z, width, height, depth) {
+		if (!this.systems.propLibrary.has(name)) return null;
+		const anchor = this.box(
+			name,
+			x,
+			FLOOR_Y + height / 2,
+			z,
+			width,
+			height,
+			depth,
+			this.M.metal,
+			{ decor: true }
+		);
+		if (this.systems.propLibrary.attach(name, anchor, { surfaceY: FLOOR_Y })) {
+			return anchor;
+		}
+		this.meshes.splice(this.meshes.indexOf(anchor), 1);
+		anchor.dispose();
+		return null;
+	}
+
 	// Dinding lurus (sejajar sumbu x atau z). Dipakai juga untuk dinding berlubang.
 	wall(o, x0, z0, x1, z1, material) {
 		const h = WING_HEIGHT;
@@ -322,11 +343,15 @@ export class WingBuilder {
 		// Ruang rawat B
 		this.bed(o, 9.4, 4.6, M);
 		this.bed(o, 9.4, 7.0, M);
-		this.bed(o, 14.6, 6.8, M);
+		if (!this.placeProp("asylum_bed", o.x + 14.6, o.z + 6.8, 1.15, 0.85, 2.1)) {
+			this.bed(o, 14.6, 6.8, M);
+		}
 
-		// Lorong: loker, brankar, noda darah
+		// Lemari arsip di ruang rawat; loker, brankar, dan noda darah di lorong.
 		[4.0, 4.65, 5.3].forEach((x) => this.locker(o, x, 0.4, M));
+		this.placeProp("filing_cabinet", o.x + 5.2, o.z + 8.25, 0.8, 1.65, 0.65);
 		this.box("gurney", o.x + 11.5, FLOOR_Y + 0.45, o.z + 0.65, 1.9, 0.9, 0.7, M.metal, { decor: true });
+		this.placeProp("wheelchair", o.x + 12, o.z + 5.3, 0.9, 1.05, 0.9);
 		this.stain(o, 9.5, 1.8, 1.4, 1.0, M);
 		this.stain(o, 3.3, 5.2, 0.8, 1.2, M);
 
