@@ -20,6 +20,7 @@ export class CheckpointManager {
 		this.collected = new Set(); // "key:ward_key", "note:doc_...", "battery:battery_3"
 		this.openedDoors = new Set();
 		this.unlockedDoors = new Set();
+		this.generators = new Set();
 		this.bindEvents();
 
 		// Jaring pengaman: pemain bisa berjalan jauh tanpa memicu event apa pun.
@@ -77,15 +78,18 @@ export class CheckpointManager {
 			this.scheduleSave();
 		});
 
-		// Perubahan penting lain: pindah area, ambil generator, saklar, pilihan ending.
-		[
-			"portal_used",
-			"generator_started",
-			"generator_activated",
-			"power_restored",
-			"switch_activated",
-			"ending_choice_requested",
-		].forEach((name) => ev.on(name, () => this.scheduleSave()));
+		// Generator yang sudah dinyalakan: jangan muncul "mati" lagi setelah reload.
+		["generator_started", "generator_activated"].forEach((name) =>
+			ev.on(name, (d) => {
+				if (d && d.id) this.generators.add(d.id);
+				this.scheduleSave();
+			})
+		);
+
+		// Perubahan penting lain: pindah area, listrik pulih, saklar, pilihan ending.
+		["portal_used", "power_restored", "switch_activated", "ending_choice_requested"].forEach((name) =>
+			ev.on(name, () => this.scheduleSave())
+		);
 	}
 
 	scheduleSave() {
@@ -118,6 +122,7 @@ export class CheckpointManager {
 			collected: [...this.collected],
 			openedDoors: [...this.openedDoors],
 			unlockedDoors: [...this.unlockedDoors],
+			generators: [...this.generators],
 			inventory,
 			missions: mm ? [...mm.done] : [],
 			docs: mm ? [...mm.docs] : [],
@@ -160,6 +165,7 @@ export class CheckpointManager {
 		this.collected = new Set(data.collected || []);
 		this.openedDoors = new Set(data.openedDoors || []);
 		this.unlockedDoors = new Set(data.unlockedDoors || []);
+		this.generators = new Set(data.generators || []);
 
 		if (im) {
 			// 1. Buang pickup yang dulu sudah diambil.
@@ -198,6 +204,19 @@ export class CheckpointManager {
 						console.warn("[Checkpoint] gagal membuka pintu", id, error);
 					}
 				}
+			});
+		}
+
+		// 4b. Generator yang sudah menyala tetap menyala.
+		if (im) {
+			im.interactables.forEach((it) => {
+				if (it.type !== "generator" || !it.data || !it.data.id) return;
+				if (!this.generators.has(it.data.id)) return;
+				it.data.isRunning = true;
+				it.isActive = false;
+				try {
+					it.mesh.metadata?.hdGenerator?.start?.();
+				} catch {}
 			});
 		}
 
