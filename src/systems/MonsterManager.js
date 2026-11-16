@@ -39,9 +39,14 @@ export const MONSTER_CONFIG = {
 	bodyRadius: 0.5,
 	turnRate: 8,
 
-	// Storyboard Scene 3: pemain aman selama berada di bawah cahaya lampu.
-	lightHoldDistance: 3.6, // monster berhenti di radius ini saat pemain terkena lampu
-	flashlightSlow: 0.55, // senter hanya memperlambat (tidak menghentikan) monster
+	// Storyboard Scene 3: cahaya melemahkan entitas, bukan menghentikannya.
+	// Monster tersendat (diam sekejap) lalu melesat lagi, jadi pengejaran tetap menegangkan.
+	lightSlow: 0.45, // pengali kecepatan saat pemain di bawah lampu
+	flashlightSlow: 0.7, // pengali saat pemain hanya memakai senter
+	lightHesitationDistance: 7, // efek tersendat baru terasa saat sudah dekat
+	lightHesitationPeriod: 1.5, // durasi satu siklus tersendat (detik)
+	lightHesitationTime: 0.35, // bagian siklus saat monster diam
+	lightLurch: 1.35, // dorongan maju setelah tersendat
 
 	// Sekuens tertangkap
 	lungeDuration: 1.4, // detik monster melesat menabrak kamera
@@ -405,20 +410,32 @@ export class MonsterManager {
 
 		const desired = toPlayer.scale(1 / dist);
 
-		// Storyboard Scene 3: entitas tidak berani masuk ke bawah cahaya lampu.
+		// Storyboard Scene 3: cahaya melukai entitas -> melambat dan tersendat,
+		// tetapi tidak pernah berhenti permanen supaya pemain tidak bisa berkemah di bawah lampu.
 		const light = this.playerLightState();
 		this.updateLightFeedback(light);
-		if (light.lamp && dist <= this.cfg.lightHoldDistance) {
-			this.faceDirection(desired, dt);
-			this.updateAudio(dt, dist);
-			this.pivot.position.y = this.floorY;
-			return;
-		}
 
 		const speedBase = dist > this.cfg.catchUpDistance ? this.cfg.catchUpSpeed : this.cfg.chaseSpeed;
-		// Senter hanya memperlambat, tidak menghentikan pengejaran.
-		const speed = speedBase * (light.flashlight && !light.lamp ? this.cfg.flashlightSlow : 1);
-		const step = Math.min(speed * dt, dist - this.cfg.catchDistance * 0.5);
+		let speed = speedBase;
+		if (light.lamp) speed *= this.cfg.lightSlow;
+		else if (light.flashlight) speed *= this.cfg.flashlightSlow;
+
+		// Siklus tersendat: diam sekejap, lalu menghentak maju lebih cepat.
+		if (light.lamp && dist < this.cfg.lightHesitationDistance) {
+			this.hesitationTimer = (this.hesitationTimer ?? 0) - dt;
+			if (this.hesitationTimer <= 0) {
+				this.hesitationTimer = this.cfg.lightHesitationPeriod;
+				this.hesitationHold = this.cfg.lightHesitationTime;
+			}
+			if (this.hesitationHold > 0) {
+				this.hesitationHold -= dt;
+				speed = 0;
+			} else {
+				speed *= this.cfg.lightLurch;
+			}
+		}
+
+		const step = Math.min(speed * dt, Math.max(0, dist - this.cfg.catchDistance * 0.5));
 		const moveDir = this.pickDirection(desired, step);
 
 		if (moveDir) {
@@ -523,7 +540,7 @@ export class MonsterManager {
 		const ui = this.systems.interactionManager;
 		if (light.lamp && !this.wasLit) {
 			this.wasLit = true;
-			ui?.showMessage("The light holds it back. Stay under the lamps.", 4200);
+			ui?.showMessage("The light burns it. It stutters - but it keeps coming.", 4200);
 		} else if (!light.lamp && this.wasLit) {
 			this.wasLit = false;
 			ui?.showMessage("It moves faster in the dark.", 3600);

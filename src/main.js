@@ -12,6 +12,7 @@ import { PropLibrary } from "./systems/PropLibrary.js";
 import { MonsterManager } from "./systems/MonsterManager.js";
 import { TexturePool } from "./systems/TexturePool.js";
 import { MissionManager } from "./systems/MissionManager.js";
+import { CheckpointManager } from "./systems/CheckpointManager.js";
 
 // Hanya horror_scene yang dimuat; nama area di dalamnya datang dari SceneManager.areaLabel.
 const SCENE_NAMES = {
@@ -67,6 +68,8 @@ class Game {
 		this.systems.monsterManager = new MonsterManager(this.scene, this.systems);
 		// Daftar misi (HUD) dan peta (tombol M)
 		this.systems.missionManager = new MissionManager(this.scene, this.systems);
+		// Checkpoint per area (localStorage) supaya reload tidak mengulang dari awal
+		this.systems.checkpoint = new CheckpointManager(this.scene, this.systems);
 		// Muat model monster di latar belakang supaya tidak ada jeda saat pintu kedua dibuka
 		this.systems.monsterManager.preload();
 
@@ -83,8 +86,13 @@ class Game {
 		// Load initial scene
 		await this.systems.sceneManager.loadScene("horror_scene");
 
-		// Start opening sequence
-		this.systems.openingSequence.start();
+		// Lanjutkan dari checkpoint terakhir kalau ada; kalau tidak, jalankan intro.
+		const restored = this.systems.checkpoint.restore();
+		if (restored) {
+			this.systems.openingSequence.startAmbientAudio();
+		} else {
+			this.systems.openingSequence.start();
+		}
 
 		// Start render loop
 		this.engine.runRenderLoop(() => {
@@ -310,6 +318,8 @@ class Game {
 	// Ending C - Terserap (storyboard: mendekati entitas / gagal menjaga cahaya).
 	showEndingC() {
 		if (this.completed || this.escaped) return;
+		// Game selesai: "Play Again" harus mulai dari awal.
+		this.systems.checkpoint?.clear();
 		this.systems.monsterManager?.despawn();
 		this.systems.audioManager.stopAmbient("entity_pursuit");
 		this.systems.audioManager.playSound("entity_whisper", { volume: 0.8 });
@@ -341,6 +351,8 @@ class Game {
 	showEscapeEnding() {
 		if (this.escaped) return;
 		this.escaped = true;
+		// Game selesai: "Play Again" harus mulai dari awal.
+		this.systems.checkpoint?.clear();
 
 		// Hentikan monster dan semua suara pengejaran
 		this.systems.monsterManager?.despawn();
@@ -372,6 +384,8 @@ class Game {
 	showGameComplete() {
 		if (this.completed) return;
 		this.completed = true;
+		// Game selesai: "Play Again" harus mulai dari awal.
+		this.systems.checkpoint?.clear();
 
 		// Samakan dengan ending A: hentikan pengejaran dan kunci pemain di balik overlay.
 		this.systems.monsterManager?.despawn();
