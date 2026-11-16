@@ -703,8 +703,12 @@ export class WingBuilder {
 			exit_key: "MAIN EXIT. The door where you started. RUN.",
 		};
 		events.on("key_collected", (data) => {
-			const hint = hints[data && data.id];
+			let hint = hints[data && data.id];
 			if (!hint) return;
+			// Kalau listrik sudah menyala, jangan bilang gerbangnya masih butuh listrik.
+			if (data.id === "restricted_key" && this.systems.eventSystem.gameState.powerRestored) {
+				hint = "The restricted gate is already humming with power.";
+			}
 			setTimeout(() => this.systems.interactionManager?.showMessage(hint, 3500), 900);
 		});
 

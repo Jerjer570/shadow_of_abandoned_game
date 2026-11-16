@@ -101,6 +101,18 @@ export class InteractionManager {
         }
 
     registerInteractable(mesh, type, data = {}) {
+        // Dedupe pintu: satu pintu (data.id) hanya punya satu objek data. Kalau pintu yang
+        // sama didaftarkan lewat mesh lain, pakai data milik registrasi pertama supaya
+        // status kunci/terbuka tidak pernah bercabang jadi dua salinan.
+        if (type === 'door' && data && data.id) {
+            for (const other of this.interactables.values()) {
+                if (other.type === 'door' && other.data && other.data.id === data.id && other.mesh !== mesh) {
+                    data = other.data;
+                    break;
+                }
+            }
+        }
+
         const interactable = {
             mesh: mesh,
             type: type,
@@ -328,6 +340,8 @@ export class InteractionManager {
             this.interactionUI.textContent = this.getInteractionText(interactable);
         } else {
             this.interactionUI.style.display = 'none';
+            // Jangan tinggalkan teks lama (mis. "Press E to unlock") di elemen yang tersembunyi.
+            this.interactionUI.textContent = '';
         }
     }
 
@@ -497,6 +511,17 @@ export class InteractionManager {
         interactable.isActive = false;
         interactable.data.isOpen = true;
         mesh.checkCollisions = false;
+
+        // Pintu yang sama bisa terdaftar lewat lebih dari satu mesh: matikan semuanya
+        // supaya tidak ada prompt yang tertinggal di pintu yang sudah terbuka.
+        if (interactable.data && interactable.data.id) {
+            this.interactables.forEach((other) => {
+                if (other === interactable || other.type !== 'door' || !other.data) return;
+                if (other.data.id !== interactable.data.id) return;
+                other.isActive = false;
+                other.mesh.checkCollisions = false;
+            });
+        }
 
         // Pintu putih HD: daun pintu berayun terbuka, anchor hanya dimatikan sebagai sasaran/tabrakan.
         const hd = mesh.metadata && mesh.metadata.hdDoor;
