@@ -310,6 +310,114 @@
             font-size: 14px;
             color: #999;
         }
+
+        @media (max-width: 760px) {
+            .hud {
+                top: 8px;
+                left: 8px;
+                width: min(180px, 42vw);
+                min-width: 0;
+                padding: 8px;
+            }
+
+            .hud h3 {
+                margin-bottom: 5px;
+                font-size: 11px;
+            }
+
+            .hud-item {
+                gap: 8px;
+                margin: 3px 0;
+                font-size: 10px;
+            }
+
+            .hud-item span:first-child {
+                white-space: nowrap;
+            }
+
+            .hud-item span:last-child {
+                text-align: right;
+            }
+
+            #missionPanel {
+                top: 8px;
+                right: 8px;
+                width: min(260px, calc(100vw - 210px));
+                max-height: 30vh;
+                overflow-y: auto;
+                padding: 8px 10px;
+                font-size: 10px;
+            }
+
+            .mission-title {
+                font-size: 11px;
+            }
+
+            .mission-item {
+                margin: 4px 0;
+            }
+
+            .mission-guide {
+                font-size: 10px;
+            }
+
+            .controls {
+                right: 8px;
+                bottom: 8px;
+                max-width: 180px;
+                padding: 8px;
+                font-size: 10px;
+            }
+
+            .controls h4 {
+                margin-bottom: 4px;
+                font-size: 10px;
+            }
+
+            .control-item {
+                min-width: 0;
+                gap: 12px;
+            }
+
+            .interaction-prompt {
+                bottom: 190px;
+                width: min(320px, calc(100vw - 24px));
+                padding: 8px 12px;
+                font-size: 12px;
+                text-align: center;
+            }
+
+            #mapPanel {
+                bottom: 8px;
+                left: 8px;
+                width: min(380px, calc(100vw - 16px));
+            }
+
+            #mapCanvas {
+                width: 100%;
+                height: auto;
+                aspect-ratio: 9 / 8;
+            }
+
+            .map-legend {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .hud {
+                width: 42vw;
+            }
+
+            #missionPanel {
+                width: calc(58vw - 24px);
+            }
+
+            .interaction-prompt {
+                bottom: 175px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -422,7 +530,13 @@
 
         controlsButton?.addEventListener('click', () => {
             menuInfo.hidden = false;
-            menuInfo.textContent = 'WASD Move · Mouse Look · F Flashlight · E Interact · Space Skip intro';
+            menuInfo.textContent = [
+                'WASD Move · Mouse Look',
+                'Click Lock Cursor · Esc Release Cursor',
+                'F Flashlight · E Interact',
+                'M Map · J Objectives · X Close Document',
+                'Space Skip Intro (available after 3 seconds)',
+            ].join('\n');
         });
         creditsButton?.addEventListener('click', () => {
             menuInfo.hidden = false;

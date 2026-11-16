@@ -15,6 +15,8 @@ You wake inside a closed asylum abandoned since the 1970s after a mass disappear
 - Physics-based collision and gravity
 - Interactive doors, documents, keys, batteries, and switches
 - Key-based progression through locked gates
+- Objective tracker, area map, and saved checkpoints
+- Three possible endings and an entity that hunts the player
 
 ### Atmosphere
 
@@ -33,8 +35,11 @@ The `horror_scene` uses GLB props from `public/assets/models/props/`:
 - `document.glb`
 - `desk.glb`
 - `iron_gate.glb`
+- `old_rusty_wheelchair.glb`
+- `rusty_filing_cabinet.glb`
+- `asylum_bed.glb`
 
-`src/systems/PropLibrary.js` loads each model once, fits instances through code, applies PBR tinting, and keeps primitive anchors as the interaction and collision meshes. If a model fails to load, the corresponding primitive placeholder remains visible.
+`src/systems/PropLibrary.js` loads each model once, fits instances through code, and applies tinting. Interactable props keep primitive anchors as their interaction and collision meshes. Static furniture is placed in the infirmary; the detailed asylum bed falls back to the original procedural bed if its model cannot load. Asset attribution is in [the props credit file](public/assets/models/props/README.md).
 
 The corridor environment is loaded from:
 
@@ -84,7 +89,11 @@ The production files are generated in `dist/`.
 - **E** — Interact with objects
 - **P** — Print the player position to the browser console
 - **G** — Print gate, pivot, visual bounds, material, and camera diagnostics
-- **Click** — Lock the mouse cursor for mouse look
+- **Click** — Lock the mouse cursor for mouse look; **Esc** releases it
+- **M** — Toggle area map
+- **J** — Toggle objectives
+- **X** — Close a document
+- **Space** — Skip the intro after the first 3 seconds
 
 ## Project structure
 
@@ -175,7 +184,8 @@ WebGL 2.0 support is recommended.
 
 - Do not rename existing interaction methods or gameplay events without updating their callers.
 - Keep primitive anchors for interactable props; visual GLB meshes are non-pickable and do not participate in collisions.
-- Tahap C (Scene 5/6, ending, and entity AI) is not included in the current implementation.
+- The browser game currently includes the Experiment Chamber, entity pursuit, and three endings. The experiment chamber is built from textured geometry rather than a dedicated room model; entity navigation uses collision-aware raycasts, not a full navmesh.
+- `npm test` runs the deterministic layout/clearance checks in `tools/check_layout.mjs`; it does not replace a visual browser playthrough.
 
 ## Credits
 
@@ -184,3 +194,5 @@ Built with:
 - [Babylon.js](https://babylonjs.com/) — 3D engine
 - [Vite](https://vitejs.dev/) — Build tool
 - Web Audio API — Spatial audio processing
+
+The wheelchair, filing cabinet, and asylum bed model credits and licenses are listed in [public/assets/models/props/README.md](public/assets/models/props/README.md).

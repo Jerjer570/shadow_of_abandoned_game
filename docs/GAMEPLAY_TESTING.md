@@ -49,7 +49,7 @@ Ulangi permainan untuk menguji setiap ending secara terpisah.
 
 ## Validasi otomatis
 
-Dengan dependency proyek terpasang dan Node 24:
+Dengan dependency proyek terpasang:
 
 ```sh
 npm test
@@ -57,10 +57,10 @@ npm run build
 git --no-pager diff --check
 ```
 
-Detail cakupan dan batasan harness: `tests/README.md`. Catatan penggabungan update GitHub: `GHOST_MERGE_NOTES.md`.
+`npm test` menjalankan pemeriksaan geometri/layout di `tools/check_layout.mjs`. Pemeriksaan ini bukan uji rendering browser atau simulasi NullEngine; ikuti checklist browser di atas untuk validasi visual dan gameplay.
 
 ## Batasan saat ini
 
 Semua area utama, termasuk Restricted Wing dan laboratorium, memakai `public/assets/models/corridor_baru.glb`. Area cerita menggunakan putaran/pergeseran model tanpa peregangan; ukuran ruang, tekstur, dan detail arsitektur asli dipertahankan. Pencahayaan, penanda, pintu, dan item membedakan fungsi area. Laboratorium masih berupa area eksperimen di dalam bangunan koridor yang sama, bukan model laboratorium khusus. Ruang prosedural sederhana hanya menjadi cadangan jika GLB gagal dimuat. Pengejaran kini dimiliki satu `MonsterManager`, memakai raycast untuk menghindari dinding dan memvalidasi lantai/titik muncul (belum navmesh/pathfinding penuh); perlindungan senter berdasarkan status cahaya, bukan arah kerucut terhadap entitas. Gerakan menggunakan raycast horizontal yang sudah dipakai proyek, bukan collision capsule penuh; tabrakan koridor/aset seperti lift masih perlu validasi visual. Ending disajikan sebagai overlay, bukan sinematik lengkap.
 
-Tes NullEngine menguji logika, geometri sintetis, serta geometri file GLB asli (jalur, tinggi lantai, akses item, dan penempatan gerbang), tetapi tidak memvalidasi rendering browser atau tampilan teksturnya. Build sukses tidak membuktikan gameplay visual sudah benar. Migrasi Unity/C# tetap milestone setelah versi web selesai diuji.
+Pemeriksaan layout memvalidasi jarak dan tabrakan pada tata letak statis yang didefinisikan di `tools/check_layout.mjs`; pemeriksaan ini tidak memuat GLB atau memvalidasi rendering browser. Build sukses tidak membuktikan gameplay visual sudah benar. Migrasi Unity/C# tetap milestone setelah versi web selesai diuji.
