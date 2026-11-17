@@ -283,15 +283,27 @@ export class InteractionManager {
         const isLarge = Math.max(ext.x, ext.y, ext.z) > 0.8;
 
         if (isLarge) {
+            // Saring murah dulu: pintu/generator yang jauh tidak perlu dua kali raycast per frame.
+            if (Vector3.Distance(origin, mesh.getAbsolutePosition()) > this.interactionRange + 3) return null;
+
             const ray = new Ray(origin, forward, this.interactionRange + 0.5);
-            const hit = this.scene.pickWithRay(
+            const isOwnSurface = (m) => m === mesh || m.isDescendantOf(mesh);
+
+            // 1) Cari permukaan objek itu sendiri: anchor + semua mesh anaknya (daun, bingkai,
+            // gagang pintu HD). Picking di sini tidak memakai isPickable karena mesh visual HD
+            // memang sengaja tidak pickable, dan anchor bisa tidak pickable setelah pintu dibuka.
+            const ownHit = this.scene.pickWithRay(ray, (m) => m.isEnabled() && isOwnSurface(m));
+            if (!ownHit || !ownHit.hit || ownHit.distance > this.interactionRange) return null;
+
+            // 2) Tolak kalau ada benda solid lain yang benar-benar menghalangi. Toleransi kecil
+            // supaya dinding yang menempel rata di permukaan pintu tidak ikut memblokir.
+            const blocker = this.scene.pickWithRay(
                 ray,
-                (m) => m.isPickable && m.isEnabled() && m.isVisible
+                (m) => m.isPickable && m.isEnabled() && m.isVisible && !isOwnSurface(m)
             );
-            if (hit && hit.hit && hit.pickedMesh === mesh && hit.distance <= this.interactionRange) {
-                return hit.distance;
-            }
-            return null;
+            if (blocker && blocker.hit && blocker.distance < ownHit.distance - 0.35) return null;
+
+            return ownHit.distance;
         }
 
         const target = mesh.getAbsolutePosition();
