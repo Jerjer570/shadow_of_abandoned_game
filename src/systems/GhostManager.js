@@ -1,6 +1,7 @@
 import {
 	Color3,
 	MeshBuilder,
+	Ray,
 	StandardMaterial,
 	TransformNode,
 	Vector3,
@@ -44,6 +45,7 @@ export const GHOST_CONFIG = {
 	fadeOut: 0.8,
 	alpha: 0.9, // opasitas maksimum
 	minDistance: 4.0, // jarak anchor dari pemain
+	closeDistance: 3.5, // jarak minimum cadangan untuk ruangan sempit (lihat pickAnchor)
 	maxDistance: 14.0,
 	lookAwayDot: 0.35, // anchor hanya dipilih kalau tidak sedang di depan mata
 	stareDot: 0.9, // seberapa lurus pemain menatap ghost
@@ -76,14 +78,18 @@ export const ANCHORS = [
 	{ x: 8.3, z: 1.6 },
 	{ x: 0.2, z: 1.8 },
 	{ x: 14.0, z: -1.6 },
-	// Infirmary (60..76, -40..-31)
+	// Infirmary (60..76, -40..-31); dua titik terakhir di lorong belakang
 	{ x: 64.5, z: -35.0 },
 	{ x: 73.5, z: -35.5 },
 	{ x: 66.4, z: -38.2 },
-	// Cell Block (60..80, -4.5..7.5)
+	{ x: 61.8, z: -38.6 },
+	{ x: 73.8, z: -38.6 },
+	// Cell Block (60..80, -4.5..7.5); dua titik di koridor depan sel
 	{ x: 63.0, z: 5.5 },
 	{ x: 70.0, z: 1.5 },
 	{ x: 78.5, z: 4.5 },
+	{ x: 62.6, z: 1.5 },
+	{ x: 74.2, z: 1.5 },
 	// Boiler Room (60..74, 40..50) - jauh dari tangki, generator, dan peti
 	{ x: 63.5, z: 45.0 },
 	{ x: 68.5, z: 44.0 },
@@ -293,22 +299,48 @@ export class GhostManager {
 		if (!camera) return FAILURE;
 		const playerArea = areaAt(bb.playerPos.x, bb.playerPos.z);
 		const forward = camera.getForwardRay().direction;
-		const candidates = [];
+		const collect = (minDistance) => {
+			const found = [];
+			for (const anchor of this.anchors) {
+				if (areaAt(anchor.x, anchor.z) !== playerArea) continue;
+				const dx = anchor.x - bb.playerPos.x;
+				const dz = anchor.z - bb.playerPos.z;
+				const dist = Math.hypot(dx, dz);
+				if (dist < minDistance || dist > this.cfg.maxDistance) continue;
+				// Jangan muncul tepat di depan mata.
+				if ((forward.x * dx + forward.z * dz) / (dist || 1) > this.cfg.lookAwayDot) continue;
+				// Jangan muncul di balik dinding/partisi: pemain cuma akan mendengar bisikan.
+				if (!this.hasLineOfSight(camera, anchor)) continue;
+				found.push(anchor);
+			}
+			return found;
+		};
 
-		for (const anchor of this.anchors) {
-			if (areaAt(anchor.x, anchor.z) !== playerArea) continue;
-			const dx = anchor.x - bb.playerPos.x;
-			const dz = anchor.z - bb.playerPos.z;
-			const dist = Math.hypot(dx, dz);
-			if (dist < this.cfg.minDistance || dist > this.cfg.maxDistance) continue;
-			// Jangan muncul tepat di depan mata.
-			if ((forward.x * dx + forward.z * dz) / (dist || 1) > this.cfg.lookAwayDot) continue;
-			candidates.push(anchor);
-		}
-
+		let candidates = collect(this.cfg.minDistance);
+		// Ruangan sempit (mis. sel tahanan) sering hanya punya satu anchor yang terlihat dan
+		// jaraknya < minDistance. Jarak minimum dilonggarkan, syarat garis pandang tetap.
+		if (!candidates.length) candidates = collect(this.cfg.closeDistance);
 		if (!candidates.length) return FAILURE;
 		this.anchor = candidates[Math.floor(Math.random() * candidates.length)];
 		return SUCCESS;
+	}
+
+	/**
+	 * True kalau tidak ada collider yang menghalangi pandangan dari mata pemain ke dada
+	 * ghost. Dipanggil sekali per pemilihan anchor (bukan per frame).
+	 */
+	hasLineOfSight(camera, anchor) {
+		const from = camera.position;
+		const dx = anchor.x - from.x;
+		const dy = anchor.y + 0.9 - from.y;
+		const dz = anchor.z - from.z;
+		const dist = Math.hypot(dx, dy, dz);
+		if (dist < 0.01) return true;
+
+		const ray = new Ray(from, new Vector3(dx / dist, dy / dist, dz / dist), dist + 0.5);
+		const hit = this.scene.pickWithRay(ray, (m) => m.checkCollisions && m.isEnabled());
+		// Toleransi kecil supaya permukaan yang menempel di dinding tidak ikut menolak.
+		return !hit || !hit.hit || hit.distance >= dist - 0.35;
 	}
 
 	appear(bb) {

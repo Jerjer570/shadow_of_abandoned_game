@@ -335,6 +335,14 @@ export class InteractionManager {
     updateInteractionUI(interactable) {
         if (!this.interactionUI) return;
 
+        // Saat duduk, raycast ke kursi sering tidak kena (pandangan sudah diarahkan ke meja),
+        // jadi prompt bangun ditampilkan terus selama pemain duduk.
+        if (this.systems.seatingSystem?.isSeated) {
+            this.interactionUI.style.display = 'block';
+            this.interactionUI.textContent = 'Press E to get up';
+            return;
+        }
+
         if (interactable) {
             this.interactionUI.style.display = 'block';
             this.interactionUI.textContent = this.getInteractionText(interactable);
