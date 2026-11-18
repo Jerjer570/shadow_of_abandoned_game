@@ -392,31 +392,36 @@ export class GhostManager {
 		const sm = this.systems.sceneManager;
 		if (!camera || !sm || !this.solids.length) return null;
 
-		// Urutan arah dikocok tiap pemanggilan, himpunan arahnya tetap 16 arah merata.
-		// Dengan urutan tetap, titik pertama yang lolos selalu di sisi yang sama sehingga
-		// ghost berulang di tempat yang sama. Mengacak sudutnya sendiri (bukan urutannya)
-		// akan menggeser sampel dan bisa melewatkan busur sempit yang valid.
-		const angles = Array.from({ length: 16 }, (_, i) => (i / 16) * Math.PI * 2);
-		for (let i = angles.length - 1; i > 0; i--) {
+		const anchorAt = (x, z) => {
+			if (areaAt(x, z) !== playerArea) return null;
+			const y = sm.findFloorY(x, z);
+			if (typeof y !== "number") return null;
+			if (this.clearanceToSolids(x, z, y).clearance < this.cfg.anchorClearance) return null;
+			const anchor = { x, y, z };
+			return this.hasLineOfSight(camera, anchor) ? anchor : null;
+		};
+
+		// 16 arah merata, tanpa arah yang tepat di depan mata, lalu urutannya dikocok.
+		// Himpunan arahnya harus tetap 16 arah merata: menggeser sudut awal bisa melewatkan
+		// busur sempit yang valid, sedangkan urutan tetap membuat ghost selalu muncul di
+		// sisi yang sama.
+		const dirs = [];
+		for (let i = 0; i < 16; i++) {
+			const angle = (i / 16) * Math.PI * 2;
+			const nx = Math.sin(angle);
+			const nz = Math.cos(angle);
+			if (nx * forward.x + nz * forward.z <= this.cfg.lookAwayDot) dirs.push({ nx, nz });
+		}
+		for (let i = dirs.length - 1; i > 0; i--) {
 			const j = Math.floor(Math.random() * (i + 1));
-			[angles[i], angles[j]] = [angles[j], angles[i]];
+			[dirs[i], dirs[j]] = [dirs[j], dirs[i]];
 		}
 
+		// Radius terdekat diperiksa lebih dulu supaya ghost tidak memilih titik yang jauh.
 		for (const radius of [4.2, 5.0, 3.8]) {
-			for (const angle of angles) {
-				const nx = Math.sin(angle);
-				const nz = Math.cos(angle);
-				// Jangan muncul tepat di depan mata.
-				if (nx * forward.x + nz * forward.z > this.cfg.lookAwayDot) continue;
-				const x = playerPos.x + nx * radius;
-				const z = playerPos.z + nz * radius;
-				if (areaAt(x, z) !== playerArea) continue;
-				const y = sm.findFloorY(x, z);
-				if (typeof y !== "number") continue;
-				if (this.clearanceToSolids(x, z, y).clearance < this.cfg.anchorClearance) continue;
-				const anchor = { x, y, z };
-				if (!this.hasLineOfSight(camera, anchor)) continue;
-				return anchor;
+			for (const dir of dirs) {
+				const anchor = anchorAt(playerPos.x + dir.nx * radius, playerPos.z + dir.nz * radius);
+				if (anchor) return anchor;
 			}
 		}
 		return null;
