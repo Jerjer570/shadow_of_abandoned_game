@@ -59,8 +59,10 @@ export const GHOST_CONFIG = {
  * Titik kemunculan (koordinat dunia).
  *
  * Semua titik ini sudah diukur terhadap collider nyata di scene (tangki, generator,
- * peti, meja, kursi, sekat): jarak terdekat 0.95 m (kursi pos perawat, meja catatan di
- * hall), terjauh 5.0 m (ujung timur hall), sisanya 1.1-1.95 m.
+ * peti, meja, kursi, sekat): jarak terdekat 0.97 m (kursi pos perawat), terjauh 5.0 m
+ * (ujung timur hall). Titik di lorong belakang Infirmary (x 61-74, z -38.6) sengaja
+ * diletakkan tepat di balik celah pintu kamar agar kamar A/B tetap punya anchor
+ * terlihat pada jarak > 3.5 m dari dalam kamar.
  *
  * PENTING: resolveAnchors() hanya memeriksa PROPERTI. Shell corridor_baru.glb adalah
  * satu mesh besar sehingga AABB-nya mencakup seluruh hall dan tidak bisa dipakai untuk
@@ -70,19 +72,29 @@ export const GHOST_CONFIG = {
  * Saat runtime, guard mengukur ulang jarak ke properti (collider setinggi badan ghost;
  * shell koridor dikecualikan) dan membuang anchor yang jaraknya < cfg.anchorClearance,
  * jadi perubahan tata letak prop tidak membuat ghost muncul di dalam properti.
+ *
+ * Kalau pemain berdiri di kantong tanpa anchor terlihat (sudut kamar, alcove sempit),
+ * pickAnchor() memakai findDynamicAnchor(): titik pada cincin 3.8-5 m di sekeliling
+ * pemain yang lolos uji lantai, clearance, dan garis pandang, jadi tidak ada area yang
+ * sama sekali tidak bisa memunculkan ghost selama masih ada ruang terlihat >= 3.8 m.
  */
 export const ANCHORS = [
 	// Hall utama
 	{ x: 4.3, z: 6.0 },
+	{ x: 4.3, z: 3.0 },
 	{ x: 4.3, z: -6.6 },
 	{ x: 8.3, z: 1.6 },
 	{ x: 0.2, z: 1.8 },
 	{ x: 14.0, z: -1.6 },
+	{ x: 11.5, z: -5.2 },
+	{ x: 14.0, z: -5.2 },
 	// Infirmary (60..76, -40..-31); dua titik terakhir di lorong belakang
 	{ x: 64.5, z: -35.0 },
 	{ x: 73.5, z: -35.5 },
 	{ x: 66.4, z: -38.2 },
 	{ x: 61.8, z: -38.6 },
+	{ x: 63.3, z: -38.6 },
+	{ x: 71.0, z: -32.8 },
 	{ x: 73.8, z: -38.6 },
 	// Cell Block (60..80, -4.5..7.5); dua titik di koridor depan sel
 	{ x: 63.0, z: 5.5 },
@@ -116,6 +128,7 @@ export class GhostManager {
 		this.alpha = 0;
 		this.anchor = null;
 		this.anchors = [];
+		this.solids = [];
 		this.anchorsResolved = false;
 		this.elapsed = 0;
 		this.time = 0;
@@ -320,8 +333,17 @@ export class GhostManager {
 		// Ruangan sempit (mis. sel tahanan) sering hanya punya satu anchor yang terlihat dan
 		// jaraknya < minDistance. Jarak minimum dilonggarkan, syarat garis pandang tetap.
 		if (!candidates.length) candidates = collect(this.cfg.closeDistance);
-		if (!candidates.length) return FAILURE;
-		this.anchor = candidates[Math.floor(Math.random() * candidates.length)];
+		if (candidates.length) {
+			this.anchor = candidates[Math.floor(Math.random() * candidates.length)];
+			return SUCCESS;
+		}
+
+		// Tidak ada anchor tetap yang terlihat (mis. sudut kamar sempit): cari titik
+		// dinamis di sekitar pemain supaya tidak ada area yang tidak pernah bisa
+		// memunculkan ghost. Jarak, lantai, clearance, dan garis pandang tetap diuji.
+		const dynamicAnchor = this.findDynamicAnchor(bb.playerPos, forward, playerArea);
+		if (!dynamicAnchor) return FAILURE;
+		this.anchor = dynamicAnchor;
 		return SUCCESS;
 	}
 
@@ -341,6 +363,63 @@ export class GhostManager {
 		const hit = this.scene.pickWithRay(ray, (m) => m.checkCollisions && m.isEnabled());
 		// Toleransi kecil supaya permukaan yang menempel di dinding tidak ikut menolak.
 		return !hit || !hit.hit || hit.distance >= dist - 0.35;
+	}
+
+	clearanceToSolids(x, z, y) {
+		let clearance = Infinity;
+		let nearest = null;
+		for (const s of this.solids) {
+			// Hanya collider yang setinggi badan ghost.
+			if (s.maxY <= y + 0.3 || s.minY >= y + this.cfg.height) continue;
+			const dx = Math.max(s.minX - x, 0, x - s.maxX);
+			const dz = Math.max(s.minZ - z, 0, z - s.maxZ);
+			const d = Math.hypot(dx, dz);
+			if (d < clearance) {
+				clearance = d;
+				nearest = s.name;
+			}
+		}
+		return { clearance, nearest };
+	}
+
+	/**
+	 * Anchor cadangan yang dicari saat semua anchor tetap tidak memenuhi syarat
+	 * (sudut ruangan, alcove sempit). Titik diambil dari cincin 3,8-5 m di sekitar
+	 * pemain, hanya di area yang sama, dengan lantai, clearance, dan garis pandang.
+	 */
+	findDynamicAnchor(playerPos, forward, playerArea) {
+		const camera = this.scene.activeCamera;
+		const sm = this.systems.sceneManager;
+		if (!camera || !sm || !this.solids.length) return null;
+
+		// Urutan arah dikocok tiap pemanggilan, himpunan arahnya tetap 16 arah merata.
+		// Dengan urutan tetap, titik pertama yang lolos selalu di sisi yang sama sehingga
+		// ghost berulang di tempat yang sama. Mengacak sudutnya sendiri (bukan urutannya)
+		// akan menggeser sampel dan bisa melewatkan busur sempit yang valid.
+		const angles = Array.from({ length: 16 }, (_, i) => (i / 16) * Math.PI * 2);
+		for (let i = angles.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[angles[i], angles[j]] = [angles[j], angles[i]];
+		}
+
+		for (const radius of [4.2, 5.0, 3.8]) {
+			for (const angle of angles) {
+				const nx = Math.sin(angle);
+				const nz = Math.cos(angle);
+				// Jangan muncul tepat di depan mata.
+				if (nx * forward.x + nz * forward.z > this.cfg.lookAwayDot) continue;
+				const x = playerPos.x + nx * radius;
+				const z = playerPos.z + nz * radius;
+				if (areaAt(x, z) !== playerArea) continue;
+				const y = sm.findFloorY(x, z);
+				if (typeof y !== "number") continue;
+				if (this.clearanceToSolids(x, z, y).clearance < this.cfg.anchorClearance) continue;
+				const anchor = { x, y, z };
+				if (!this.hasLineOfSight(camera, anchor)) continue;
+				return anchor;
+			}
+		}
+		return null;
 	}
 
 	appear(bb) {
@@ -462,6 +541,9 @@ export class GhostManager {
 			});
 		}
 
+		// Daftar ini dipakai lagi oleh findDynamicAnchor() lewat clearanceToSolids().
+		this.solids = solids;
+
 		const valid = [];
 		for (const anchor of ANCHORS) {
 			const y = sm.findFloorY(anchor.x, anchor.z);
@@ -470,20 +552,7 @@ export class GhostManager {
 				continue;
 			}
 
-			let clearance = Infinity;
-			let nearest = null;
-			for (const s of solids) {
-				// Hanya collider yang setinggi badan ghost.
-				if (s.maxY <= y + 0.3 || s.minY >= y + this.cfg.height) continue;
-				const dx = Math.max(s.minX - anchor.x, 0, anchor.x - s.maxX);
-				const dz = Math.max(s.minZ - anchor.z, 0, anchor.z - s.maxZ);
-				const d = Math.hypot(dx, dz);
-				if (d < clearance) {
-					clearance = d;
-					nearest = s.name;
-				}
-			}
-
+			const { clearance, nearest } = this.clearanceToSolids(anchor.x, anchor.z, y);
 			if (clearance < this.cfg.anchorClearance) {
 				console.warn(
 					`[Ghost] anchor (${anchor.x}, ${anchor.z}) dibuang: ${clearance.toFixed(2)} m dari ${nearest}.`
