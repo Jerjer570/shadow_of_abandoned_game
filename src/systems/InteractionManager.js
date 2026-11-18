@@ -371,6 +371,10 @@ export class InteractionManager {
                 }
                 return 'Press E to start generator';
             }
+            case 'seat':
+                return this.systems.seatingSystem?.isSeated ? 'Press E to get up' : 'Press E to sit';
+            case 'dispenser':
+                return 'Press E to drink';
             default:
                 return 'Press E to interact';
         }
@@ -400,6 +404,13 @@ export class InteractionManager {
                 return this.interactWithGenerator(interactable);
             case 'machine':
                 return this.interactWithMachine(interactable);
+            case 'seat': {
+                const seating = this.systems.seatingSystem;
+                if (!seating) return false;
+                return seating.isSeated ? seating.stand() : seating.sit(interactable);
+            }
+            case 'dispenser':
+                return this.systems.seatingSystem?.drink(interactable) ?? false;
             default:
                 return false;
         }

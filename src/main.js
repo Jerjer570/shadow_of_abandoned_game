@@ -10,9 +10,12 @@ import { EnvironmentManager } from "./systems/EnvironmentManager.js";
 import { OpeningSequence } from "./systems/OpeningSequence.js";
 import { PropLibrary } from "./systems/PropLibrary.js";
 import { MonsterManager } from "./systems/MonsterManager.js";
+import { GhostManager } from "./systems/GhostManager.js";
 import { TexturePool } from "./systems/TexturePool.js";
 import { MissionManager } from "./systems/MissionManager.js";
 import { CheckpointManager } from "./systems/CheckpointManager.js";
+import { SeatingSystem } from "./systems/SeatingSystem.js";
+
 
 // Hanya horror_scene yang dimuat; nama area di dalamnya datang dari SceneManager.areaLabel.
 const SCENE_NAMES = {
@@ -66,12 +69,15 @@ class Game {
 			this.systems
 		);
 		this.systems.monsterManager = new MonsterManager(this.scene, this.systems);
+		// Ghost anchor (behavior tree): atmosfer tambahan, tidak pernah menangkap pemain.
+		this.systems.ghostManager = new GhostManager(this.scene, this.systems);
 		// Daftar misi (HUD) dan peta (tombol M)
 		this.systems.missionManager = new MissionManager(this.scene, this.systems);
 		// Checkpoint per area (localStorage) supaya reload tidak mengulang dari awal
 		this.systems.checkpoint = new CheckpointManager(this.scene, this.systems);
 		// Muat model monster di latar belakang supaya tidak ada jeda saat pintu kedua dibuka
 		this.systems.monsterManager.preload();
+		this.systems.ghostManager.preload();
 
 		// Setup camera
 		this.setupCamera();
@@ -82,6 +88,10 @@ class Game {
 			this.scene,
 			this.systems
 		);
+
+		// Duduk di kursi + minum dari dispenser. Interactable "seat"/"dispenser" dibuat
+		// oleh WingBuilder.registerFurniture(); tanpa sistem ini keduanya tidak bereaksi.
+		this.systems.seatingSystem = new SeatingSystem(this.scene, this.systems);
 
 		// Load initial scene
 		await this.systems.sceneManager.loadScene("horror_scene");

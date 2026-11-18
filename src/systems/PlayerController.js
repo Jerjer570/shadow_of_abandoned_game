@@ -36,12 +36,18 @@ export class PlayerController {
 
             if (kbInfo.type === 1) { // Key down
                 this.keys[key] = true;
+                // Auto-repeat saat tombol ditahan tidak boleh memicu aksi berulang
+                // (mis. berdiri lalu langsung duduk lagi karena E ditahan).
+                if (kbInfo.event.repeat) return;
 
                 if (key === 'f') {
                     this.toggleFlashlight();
                 }
                 if (key === 'e') {
-                    this.systems.interactionManager.tryInteract();
+                    // Saat duduk, E dipakai untuk bangun (bukan berinteraksi lagi).
+                    const seating = this.systems.seatingSystem;
+                    if (seating && seating.isSeated) seating.stand();
+                    else this.systems.interactionManager.tryInteract();
                 }
             } else if (kbInfo.type === 2) { // Key up
                 this.keys[key] = false;
@@ -95,6 +101,14 @@ export class PlayerController {
     update(deltaTime) {
         // Saat tertangkap / game selesai, pemain tidak boleh bergerak atau menoleh.
         if (this.frozen) {
+            this.isMoving = false;
+            this.mouseMovement.x = 0;
+            this.mouseMovement.y = 0;
+            this.updateFlashlight(deltaTime);
+            return;
+        }
+        // Saat duduk, kamera dipegang SeatingSystem (posisi kursi, yaw terbatas, napas).
+        if (this.seated) {
             this.isMoving = false;
             this.mouseMovement.x = 0;
             this.mouseMovement.y = 0;

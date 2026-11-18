@@ -3,11 +3,14 @@ import {
 	MeshBuilder,
 	StandardMaterial,
 	Vector3,
+	Vector4,
 } from "@babylonjs/core";
 import { WING_ORIGINS as ORIGINS } from "./AreaMap.js";
 import { attachHDDoor } from "./DoorFactory.js";
 import { LabBuilder } from "./LabBuilder.js";
 import { LAB } from "./LabLayout.js";
+import { getHDMaterials } from "./HDMaterials.js";
+import * as Kit from "./Furniture.js";
 
 const LAB_ARRIVE = LAB.arrive;
 
@@ -77,6 +80,10 @@ export class WingBuilder {
 		this.eventsBound = false;
 		this.silhouetteTimeout = null;
 		this.silhouette = null;
+		this.seatMeshes = {};
+		this.pendingSeats = [];
+		this.pendingDispensers = [];
+		this.curO = { x: 0, z: 0 };
 	}
 
 	// ---------------------------------------------------------------
@@ -97,28 +104,18 @@ export class WingBuilder {
 	}
 
 	materials() {
+		// Material HD bersama (sama dengan Experiment Chamber) supaya semua ruangan konsisten dengan hall.
 		this.mats = {};
-		return {
-			floor: this.mat("floor", new Color3(0.2, 0.19, 0.18), 0.12),
-			ceiling: this.mat("ceiling", new Color3(0.16, 0.16, 0.15), 0.08),
-			wall: this.mat("wall", new Color3(0.36, 0.4, 0.37), 0.14),
-			wallDark: this.mat("wallDark", new Color3(0.26, 0.28, 0.27), 0.12),
-			bed: this.mat("bed", new Color3(0.42, 0.42, 0.4), 0.12),
-			metal: this.mat("metal", new Color3(0.3, 0.32, 0.34), 0.1),
-			rust: this.mat("rust", new Color3(0.42, 0.22, 0.12), 0.18),
-			wood: this.mat("wood", new Color3(0.2, 0.12, 0.08), 0.15),
-			blood: this.mat("blood", new Color3(0.28, 0.02, 0.02), 0.5),
-			shadow: this.mat("shadow", new Color3(0.01, 0.01, 0.01), 0),
-		};
+		return getHDMaterials(this.scene, this.systems.texturePool);
 	}
 
 	box(name, cx, cy, cz, w, h, d, material, opts = {}) {
 		const { collide = true, decor = false, pickable = true } = opts;
-		const mesh = MeshBuilder.CreateBox(
-			`wing_${name}_${this.counter++}`,
-			{ width: w, height: h, depth: d },
-			this.scene
-		);
+		const tile = material && material.metadata && material.metadata.tile;
+		const uv = (a, b) => new Vector4(0, 0, Math.max(0.05, a / tile), Math.max(0.05, b / tile));
+		const boxOpts = { width: w, height: h, depth: d };
+		if (tile) boxOpts.faceUV = [uv(w, h), uv(w, h), uv(d, h), uv(d, h), uv(w, d), uv(w, d)];
+		const mesh = MeshBuilder.CreateBox(`wing_${name}_${this.counter++}`, boxOpts, this.scene);
 		mesh.position.set(cx, cy, cz);
 		mesh.material = material;
 		mesh.checkCollisions = collide;
@@ -131,25 +128,67 @@ export class WingBuilder {
 		return mesh;
 	}
 
-	placeProp(name, x, z, width, height, depth) {
-		if (!this.systems.propLibrary.has(name)) return null;
-		const anchor = this.box(
-			name,
-			x,
-			FLOOR_Y + height / 2,
-			z,
-			width,
-			height,
-			depth,
-			this.M.metal,
-			{ decor: true }
-		);
-		if (this.systems.propLibrary.attach(name, anchor, { surfaceY: FLOOR_Y })) {
-			return anchor;
-		}
-		this.meshes.splice(this.meshes.indexOf(anchor), 1);
-		anchor.dispose();
-		return null;
+	// --- Antarmuka untuk Furniture.js (koordinat LOKAL ruangan aktif: this.curO) ---
+	tbox(name, cx, cy, cz, w, h, d, material, { collide = true, decor = false, pickable = true } = {}) {
+		const o = this.curO;
+		const m = this.box(name, o.x + cx, FLOOR_Y + cy, o.z + cz, w, h, d, material, { collide, decor, pickable: collide ? pickable : false });
+		return m;
+	}
+
+	deco(name, cx, cy, cz, w, h, d, material) {
+		return this.tbox(name, cx, cy, cz, w, h, d, material, { collide: false, decor: true, pickable: false });
+	}
+
+	cylinder(name, cx, cy, cz, dia, h, material, { collide = false, tess = 20, rotX = 0, rotZ = 0 } = {}) {
+		const o = this.curO;
+		const m = MeshBuilder.CreateCylinder(`wing_${name}_${this.counter++}`, { diameter: dia, height: h, tessellation: tess }, this.scene);
+		m.position.set(o.x + cx, FLOOR_Y + cy, o.z + cz);
+		m.rotation.x = rotX;
+		m.rotation.z = rotZ;
+		m.material = material;
+		m.checkCollisions = collide;
+		m.isPickable = collide;
+		m.metadata = { isDecor: true };
+		m.computeWorldMatrix(true);
+		m.refreshBoundingInfo();
+		this.meshes.push(m);
+		return m;
+	}
+
+	// Kursi yang bisa diduduki + catat untuk didaftarkan setelah semua ruangan jadi.
+	seat(o, id, cx, cz, face, stand = null) {
+		this.curO = o;
+		Kit.chair(this, id, cx, cz, face);
+		this.pendingSeats.push({ id, o, cx, cz, face, stand });
+	}
+
+	dispenser(o, id, cx, cz, face) {
+		this.curO = o;
+		const body = Kit.dispenser(this, id, cx, cz, face);
+		this.pendingDispensers.push({ id, body });
+	}
+
+	table(o, id, cx, cz) {
+		this.curO = o;
+		Kit.table(this, id, cx, cz, 1.2, 0.8, 0.78);
+	}
+
+	registerFurniture() {
+		const im = this.systems.interactionManager;
+		this.pendingSeats.forEach(({ id, o, cx, cz, face, stand }) => {
+			const mesh = this.seatMeshes[id];
+			if (!mesh) return;
+			im.registerInteractable(mesh, "seat", {
+				id,
+				seatPos: { x: o.x + cx, z: o.z + cz },
+				viewYaw: Math.atan2(face[0], face[1]),
+				// berdiri di belakang kursi (menjauhi meja)
+				standPos: stand ? { x: o.x + stand.x, z: o.z + stand.z } : { x: o.x + cx - face[0] * 0.95, z: o.z + cz - face[1] * 0.95 },
+			});
+		});
+		this.pendingDispensers.forEach(({ id, body }) => im.registerInteractable(body, "dispenser", { id, uses: 0 }));
+		this.pendingSeats = [];
+		this.pendingDispensers = [];
 	}
 
 	// Dinding lurus (sejajar sumbu x atau z). Dipakai juga untuk dinding berlubang.
@@ -207,17 +246,14 @@ export class WingBuilder {
 	}
 
 	bed(o, cx, cz, M, alongZ = true) {
-		const w = alongZ ? 1.0 : 2.0;
-		const d = alongZ ? 2.0 : 1.0;
-		this.box("bed", o.x + cx, FLOOR_Y + 0.3, o.z + cz, w, 0.6, d, M.metal, { decor: true });
-		this.box("mattress", o.x + cx, FLOOR_Y + 0.66, o.z + cz, w - 0.1, 0.12, d - 0.1, M.bed, {
-			decor: true,
-			collide: false,
-		});
+		this.curO = o;
+		const n = this.counter++;
+		Kit.bed(this, `bed${n}`, cx, cz, alongZ, n % 3 === 0);
 	}
 
 	locker(o, cx, cz, M) {
-		this.box("locker", o.x + cx, FLOOR_Y + 0.95, o.z + cz, 0.55, 1.9, 0.5, M.metal, { decor: true });
+		this.curO = o;
+		Kit.locker(this, `locker${this.counter++}`, cx, cz, [0, 1]);
 	}
 
 	stain(o, cx, cz, w, d, M) {
@@ -311,6 +347,7 @@ export class WingBuilder {
 		this.buildBoilerRoom();
 		this.lab = new LabBuilder(this);
 		this.lab.build();
+		this.registerFurniture();
 		this.buildHullDoors();
 
 		// Pastikan matrix dan bounding box siap sebelum raycast lantai pertama.
@@ -323,7 +360,9 @@ export class WingBuilder {
 	// --- Infirmary: bebas dimasuki, berisi cell_key ---------------
 	buildInfirmary() {
 		const o = WING_ORIGINS.infirmary;
-		const M = this.M;
+		this.curO = o;
+		// Infirmary: dinding lebih pucat (bangsal), partisi lebih gelap
+		const M = { ...this.M, wall: this.M.wallInf };
 		this.shell(o, 0, 0, 16, 9, M);
 
 		// Dinding luar
@@ -343,15 +382,19 @@ export class WingBuilder {
 		// Ruang rawat B
 		this.bed(o, 9.4, 4.6, M);
 		this.bed(o, 9.4, 7.0, M);
-		if (!this.placeProp("asylum_bed", o.x + 14.6, o.z + 6.8, 1.15, 0.85, 2.1)) {
-			this.bed(o, 14.6, 6.8, M);
-		}
+		this.bed(o, 14.6, 6.8, M);
 
-		// Lemari arsip di ruang rawat; loker, brankar, dan noda darah di lorong.
-		[4.0, 4.65, 5.3].forEach((x) => this.locker(o, x, 0.4, M));
-		this.placeProp("filing_cabinet", o.x + 5.2, o.z + 8.25, 0.8, 1.65, 0.65);
-		this.box("gurney", o.x + 11.5, FLOOR_Y + 0.45, o.z + 0.65, 1.9, 0.9, 0.7, M.metal, { decor: true });
-		this.placeProp("wheelchair", o.x + 12, o.z + 5.3, 0.9, 1.05, 0.9);
+		// Lorong: loker, brankar, noda darah
+		[3.9, 4.6, 5.3].forEach((x) => this.locker(o, x, 0.45, M));
+		Kit.gurney(this, "gurney", 11.5, 0.65, 1.9, 0.7, false);
+
+		// Pos perawat di lorong: meja + kursi (menghadap meja), dispenser di ujung timur
+		this.table(o, "nurse_table", 7.6, 0.6);
+		this.seat(o, "inf_chair_station", 7.6, 1.5, [0, -1]);
+		this.dispenser(o, "inf_dispenser", 15.3, 0.55, [0, 1]);
+		// Kursi di meja dokumen ruang rawat A dan meja kunci ruang rawat B
+		this.seat(o, "inf_chair_desk", 3.2, 7.55, [0, 1]);
+		this.seat(o, "inf_chair_key", 12.4, 7.55, [0, 1]);
 		this.stain(o, 9.5, 1.8, 1.4, 1.0, M);
 		this.stain(o, 3.3, 5.2, 0.8, 1.2, M);
 
@@ -410,7 +453,9 @@ export class WingBuilder {
 	// --- Cell Block: boiler_key dan fuse ---------------------------
 	buildCellBlock() {
 		const o = WING_ORIGINS.cellblock;
-		const M = this.M;
+		this.curO = o;
+		// Cell Block: dinding paling kotor dan gelap
+		const M = { ...this.M, wall: this.M.wallCell, wallDark: this.M.wallCell };
 		this.shell(o, 0, -4.5, 20, 7.5, M);
 
 		this.wall(o, 0, -4.5, 20, -4.5, M.wall);
@@ -434,6 +479,16 @@ export class WingBuilder {
 		});
 		this.stain(o, 10, 1.5, 2.2, 0.9, M);
 		this.stain(o, 17.5, 1.2, 1.0, 1.4, M);
+
+		// Pos jaga di lorong: meja + kursi, dispenser di ujung timur
+		this.table(o, "guard_table", 5.0, 2.4);
+		this.seat(o, "cell_chair_guard", 5.0, 1.3, [0, 1], { x: 5.95, z: 1.3 });
+		this.dispenser(o, "cell_dispenser", 19.65, 1.5, [-1, 0]);
+		// Kursi untuk tiap meja dokumen / kunci di dalam sel
+		this.seat(o, "cell_chair_1", 2.5, -2.95, [0, -1]);
+		this.seat(o, "cell_chair_2", 17.5, -2.95, [0, -1]);
+		this.seat(o, "cell_chair_3", 7.5, 6.05, [0, 1]);
+		this.seat(o, "cell_chair_4", 17.5, 6.05, [0, 1]);
 
 		this.light("cell_hall", o.x + 10, FLOOR_Y + 2.4, o.z + 1.5, 0.5, 13);
 		this.light("cell_red", o.x + 17.5, FLOOR_Y + 2.2, o.z + 5, 0.3, 5, new Color3(1, 0.2, 0.15));
@@ -514,7 +569,9 @@ export class WingBuilder {
 	// --- Boiler Room: generator butuh fuse -------------------------
 	buildBoilerRoom() {
 		const o = WING_ORIGINS.boiler;
-		const M = this.M;
+		this.curO = o;
+		// Boiler Room: dinding berkarat kecokelatan
+		const M = { ...this.M, wall: this.M.wallBoiler, wallDark: this.M.wallBoiler };
 		this.shell(o, 0, 0, 14, 10, M);
 
 		this.wall(o, 0, 0, 14, 0, M.wallDark);
@@ -541,6 +598,11 @@ export class WingBuilder {
 			tank.computeWorldMatrix(true);
 			tank.refreshBoundingInfo();
 			this.meshes.push(tank);
+			// pita baja, kubah atas dan katup supaya tidak berupa tabung polos
+			[0.6, 1.5, 2.4].forEach((y) => this.cylinder("tankBand", x, y, z, 2.4, 0.1, M.steel, { tess: 24 }));
+			this.cylinder("tankDome", x, 3.05, z, 1.6, 0.18, M.steel, { tess: 20 });
+			// Katup menempel di dinding tangki (radius 1.15 m), bukan melayang di depannya.
+			this.cylinder("tankValve", x + 1.1, 1.0, z, 0.12, 0.3, M.brass, { tess: 10 });
 		});
 
 		// Pipa di langit-langit (tanpa tabrakan)
@@ -559,10 +621,18 @@ export class WingBuilder {
 		});
 
 		// Peti kayu di ruang belakang
-		this.box("crate", o.x + 9.5, FLOOR_Y + 0.5, o.z + 2.2, 1.0, 1.0, 1.0, M.wood, { decor: true });
-		this.box("crate", o.x + 10.7, FLOOR_Y + 0.5, o.z + 2.2, 1.0, 1.0, 1.0, M.wood, { decor: true });
-		this.box("crate", o.x + 10.1, FLOOR_Y + 1.5, o.z + 2.2, 1.0, 1.0, 1.0, M.wood, { decor: true });
+		Kit.crate(this, "crateA", 9.5, 0.5, 2.2, 1.0);
+		Kit.crate(this, "crateB", 10.7, 0.5, 2.2, 1.0);
+		Kit.crate(this, "crateC", 10.1, 1.5, 2.2, 1.0);
 		this.stain(o, 9.5, 5.0, 1.8, 1.4, M);
+
+		// Meja istirahat teknisi: meja + 2 kursi di ruang belakang, dispenser di dinding timur
+		this.table(o, "boiler_table", 11.5, 5.0);
+		this.seat(o, "boiler_chair_a", 11.5, 4.0, [0, 1], { x: 12.45, z: 4.0 });
+		this.seat(o, "boiler_chair_b", 11.5, 6.0, [0, -1]);
+		this.dispenser(o, "boiler_dispenser", 13.65, 5.0, [-1, 0]);
+		// Kursi meja catatan: digeser ikut mejanya (lihat posisi note doc_boiler_log).
+		this.seat(o, "boiler_chair_desk", 9.2, 8.4, [0, 1]);
 
 		this.light("boiler_front", o.x + 4, FLOOR_Y + 2.5, o.z + 5, 0.4, 9, new Color3(1, 0.6, 0.35));
 		this.light("boiler_back", o.x + 11, FLOOR_Y + 2.5, o.z + 5, 0.35, 9);
@@ -581,7 +651,8 @@ export class WingBuilder {
 			{
 				type: "note",
 				snapToFloor: true,
-				position: new Vector3(o.x + 9.2, FLOOR_Y, o.z + 9.5),
+				// Meja 1.58 x 0.73 m: di z 9.5 sisinya hanya 3.5 cm dari dinding belakang, jadi digeser.
+				position: new Vector3(o.x + 9.2, FLOOR_Y, o.z + 9.2),
 				deskAxis: "x",
 				data: {
 					id: "doc_boiler_log",
@@ -728,12 +799,8 @@ export class WingBuilder {
 			exit_key: "MAIN EXIT. The door where you started. RUN.",
 		};
 		events.on("key_collected", (data) => {
-			let hint = hints[data && data.id];
+			const hint = hints[data && data.id];
 			if (!hint) return;
-			// Kalau listrik sudah menyala, jangan bilang gerbangnya masih butuh listrik.
-			if (data.id === "restricted_key" && this.systems.eventSystem.gameState.powerRestored) {
-				hint = "The restricted gate is already humming with power.";
-			}
 			setTimeout(() => this.systems.interactionManager?.showMessage(hint, 3500), 900);
 		});
 
